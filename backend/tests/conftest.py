@@ -61,7 +61,7 @@ def in_memory_store() -> InMemoryVectorStore:
 def seeded_admin(db_session) -> User:
     user = User(
         role_id="T6-LEAD",
-        email="T6-LEAD@synapse.local",
+        email="T6-LEAD@synapse.example",
         hashed_password=hash_password("ChangeMe123!"),
         role=Role.ADMIN.value,
         is_active=True,

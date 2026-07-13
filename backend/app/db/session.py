@@ -46,13 +46,17 @@ def seed_reference_data() -> None:
     from app.core.security import Role, hash_password
     from app.models.user import User
 
+    # NOTE: use a non-reserved domain. ".local" is an RFC 6762 special-use
+    # TLD that pydantic's EmailStr (via email-validator) always rejects, so
+    # any seeded "@*.local" address would be unable to log in through the
+    # /auth/login endpoint (its request body is validated as EmailStr).
     seed_users = [
-        ("T6-LEAD", "T6-LEAD@synapse.local", Role.ADMIN),
-        ("T6-BE1", "T6-BE1@synapse.local", Role.WORKFLOW_BUILDER),
-        ("T6-DEV1", "T6-DEV1@synapse.local", Role.REVIEWER),
-        ("T6-DATA1", "T6-DATA1@synapse.local", Role.ANALYST),
-        ("T6-DATA2", "T6-DATA2@synapse.local", Role.ANALYST),
-        ("T6-DATA3", "T6-DATA3@synapse.local", Role.API_CONSUMER),
+        ("T6-LEAD", "T6-LEAD@synapse.example", Role.ADMIN),
+        ("T6-BE1", "T6-BE1@synapse.example", Role.WORKFLOW_BUILDER),
+        ("T6-DEV1", "T6-DEV1@synapse.example", Role.REVIEWER),
+        ("T6-DATA1", "T6-DATA1@synapse.example", Role.ANALYST),
+        ("T6-DATA2", "T6-DATA2@synapse.example", Role.ANALYST),
+        ("T6-DATA3", "T6-DATA3@synapse.example", Role.API_CONSUMER),
     ]
 
     with SessionLocal() as db:

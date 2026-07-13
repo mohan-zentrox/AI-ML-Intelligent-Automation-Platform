@@ -12,7 +12,12 @@ alembic==1.13.2
 psycopg2-binary==2.9.9
 
 # Auth / security
+# NOTE: passlib 1.7.4 probes bcrypt via the removed `__about__.__version__`
+# attribute, which bcrypt>=4.1 dropped. Pin bcrypt to a version that still
+# exposes it, otherwise passlib's backend self-test raises
+# "password cannot be longer than 72 bytes" for every hash/verify call.
 passlib[bcrypt]==1.7.4
+bcrypt==4.0.1
 python-jose[cryptography]==3.3.0
 python-multipart==0.0.9
 

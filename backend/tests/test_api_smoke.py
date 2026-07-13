@@ -50,7 +50,7 @@ def client():
     db.add(
         User(
             role_id="T6-LEAD",
-            email="admin@synapse.local",
+            email="admin@synapse.example",
             hashed_password=hash_password("AdminPass123!"),
             role=Role.ADMIN.value,
             is_active=True,
@@ -59,7 +59,7 @@ def client():
     db.add(
         User(
             role_id="T6-DATA1",
-            email="analyst@synapse.local",
+            email="analyst@synapse.example",
             hashed_password=hash_password("AnalystPass123!"),
             role=Role.ANALYST.value,
             is_active=True,
@@ -88,7 +88,7 @@ def test_health_endpoint():
 
 def test_login_rejects_bad_credentials(client):
     resp = client.post(
-        "/api/v1/auth/login", json={"email": "admin@synapse.local", "password": "wrong"}
+        "/api/v1/auth/login", json={"email": "admin@synapse.example", "password": "wrong"}
     )
     assert resp.status_code == 401
 
@@ -99,7 +99,7 @@ def test_query_endpoint_requires_auth(client):
 
 
 def test_admin_can_ingest_and_query_with_citations(client):
-    token = _login(client, "admin@synapse.local", "AdminPass123!")
+    token = _login(client, "admin@synapse.example", "AdminPass123!")
     headers = {"Authorization": f"Bearer {token}"}
 
     ingest_resp = client.post(
@@ -127,7 +127,7 @@ def test_admin_can_ingest_and_query_with_citations(client):
 
 
 def test_analyst_cannot_issue_api_keys(client):
-    token = _login(client, "analyst@synapse.local", "AnalystPass123!")
+    token = _login(client, "analyst@synapse.example", "AnalystPass123!")
     resp = client.post(
         "/api/v1/auth/api-keys",
         json={"name": "analyst key", "role": Role.ANALYST.value},
@@ -137,7 +137,7 @@ def test_analyst_cannot_issue_api_keys(client):
 
 
 def test_admin_can_issue_scoped_api_key_and_use_it(client):
-    token = _login(client, "admin@synapse.local", "AdminPass123!")
+    token = _login(client, "admin@synapse.example", "AdminPass123!")
     resp = client.post(
         "/api/v1/auth/api-keys",
         json={"name": "ci-consumer-key", "role": Role.API_CONSUMER.value},
@@ -156,7 +156,7 @@ def test_admin_can_issue_scoped_api_key_and_use_it(client):
 
 
 def test_analyst_can_read_usage_analytics(client):
-    token = _login(client, "analyst@synapse.local", "AnalystPass123!")
+    token = _login(client, "analyst@synapse.example", "AnalystPass123!")
     resp = client.get("/api/v1/analytics/usage", headers={"Authorization": f"Bearer {token}"})
     assert resp.status_code == 200
     body = resp.json()
