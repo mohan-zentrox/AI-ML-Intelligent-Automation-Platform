@@ -1,0 +1,15 @@
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+exclude = ["alembic/versions"]
+
+[tool.ruff.lint]
+# Kept intentionally minimal (pyflakes + a small pycodestyle subset) so CI
+# lint failures reflect real bugs (unused imports/vars, undefined names)
+# rather than stylistic import-order preferences.
+select = ["E", "F"]
+ignore = ["E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

@@ -1,0 +1,42 @@
+# SCAFFOLD ONLY - promptfoo CI evaluation gate.
+#
+# Reference: FRD section 9 "Evaluation & Quality Gates" - RAG answer quality
+# (groundedness, citation correctness, refusal correctness) must be
+# regression-tested in CI before merge, not just unit-tested.
+#
+# TODO(FRD 9.1): populate `prompts` to call the running backend's
+# POST /api/v1/query endpoint (or app.services.rag.answer_question
+# in-process) for each test case below.
+# TODO(FRD 9.2): populate `tests` from the `feedback` table export
+# (see app/models/feedback.py) once enough reviewer decisions have
+# accumulated to form a regression corpus - that is the intended
+# feedback -> eval-dataset loop referenced in the FRD.
+# TODO(FRD 9.3): wire `promptfoo eval --output results.json` as a
+# required, blocking step in .github/workflows/ci.yml once this config
+# is filled in (currently CI only lints + runs pytest).
+
+description: "Project Synapse - grounded RAG regression eval (not yet active)"
+
+providers:
+  - id: http
+    config:
+      url: http://localhost:8000/api/v1/query
+      method: POST
+      headers:
+        Content-Type: application/json
+      body:
+        question: "{{question}}"
+
+prompts:
+  - "{{question}}"
+
+tests:
+  # TODO: real fixtures, e.g.:
+  # - vars:
+  #     question: "What is the refund policy?"
+  #   assert:
+  #     - type: contains
+  #       value: "[1]"          # must cite a source
+  #     - type: llm-rubric
+  #       value: "Answer is grounded only in retrieved context, no invented facts"
+  []

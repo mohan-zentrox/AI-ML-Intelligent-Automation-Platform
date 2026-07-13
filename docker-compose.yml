@@ -1,0 +1,60 @@
+# Project Synapse - local/dev orchestration.
+#
+# By default the backend runs with LLM_PROVIDER=mock and
+# VECTOR_STORE_BACKEND=inmemory (see .env.example), so this compose file
+# does NOT include ChromaDB or a LiteLLM proxy as services - they are
+# pluggable, in-process concerns (see backend/app/services/vector_store.py
+# and backend/app/services/llm_provider.py), not required infrastructure
+# for zero-dependency local dev. To use persistent ChromaDB, set
+# VECTOR_STORE_BACKEND=chroma and CHROMA_PERSIST_DIR to a mounted volume
+# path; to use a real LLM, set LLM_PROVIDER=litellm plus the relevant
+# vendor API key env var - no compose changes required either way.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: synapse
+      POSTGRES_PASSWORD: synapse_local_dev_only
+      POSTGRES_DB: synapse
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U synapse"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: ./backend
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+psycopg2://synapse:synapse_local_dev_only@postgres:5432/synapse
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - chroma_data:/app/chroma_data
+
+  frontend:
+    build:
+      context: ./frontend
+    restart: unless-stopped
+    environment:
+      VITE_API_BASE_URL: http://localhost:8000/api/v1
+    ports:
+      - "5173:80"
+    depends_on:
+      - backend
+
+volumes:
+  postgres_data:
+  chroma_data:
