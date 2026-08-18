@@ -1,10 +1,23 @@
-import { FormEvent, useEffect, useState } from "react";
+import { ChangeEvent, FormEvent, useEffect, useState } from "react";
 import NavBar from "../../components/NavBar";
-import { ApiError, DocumentOut, listDocuments, uploadText } from "../../api/client";
+import {
+  ApiError,
+  DocumentOut,
+  SUPPORTED_UPLOAD_EXTENSIONS,
+  listDocuments,
+  uploadFile,
+  uploadText,
+} from "../../api/client";
+
+type Mode = "text" | "file";
+
+const ACCEPT_ATTR = SUPPORTED_UPLOAD_EXTENSIONS.join(",");
 
 export default function Upload() {
+  const [mode, setMode] = useState<Mode>("text");
   const [title, setTitle] = useState("");
   const [text, setText] = useState("");
+  const [file, setFile] = useState<File | null>(null);
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [documents, setDocuments] = useState<DocumentOut[]>([]);
@@ -22,16 +35,34 @@ export default function Upload() {
     refresh();
   }, []);
 
+  function switchMode(next: Mode) {
+    setMode(next);
+    setError(null);
+    setStatus(null);
+  }
+
+  function handleFileChange(e: ChangeEvent<HTMLInputElement>) {
+    setFile(e.target.files?.[0] ?? null);
+    setError(null);
+    setStatus(null);
+  }
+
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
     setError(null);
     setStatus(null);
     setLoading(true);
     try {
-      const doc = await uploadText(title, text);
+      // `title` is optional for file uploads - the backend falls back to the
+      // filename - but required when pasting raw text.
+      const doc =
+        mode === "file" && file
+          ? await uploadFile(file, title.trim() || undefined)
+          : await uploadText(title, text);
       setStatus(`Ingested "${doc.title}" -> ${doc.chunk_count} chunk(s) embedded and indexed.`);
       setTitle("");
       setText("");
+      setFile(null);
       await refresh();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Ingestion failed");
@@ -40,36 +71,74 @@ export default function Upload() {
     }
   }
 
+  const tabClass = (active: boolean) =>
+    `px-3 py-1.5 text-sm rounded-md ${
+      active ? "bg-synapse-600 text-white" : "bg-gray-100 text-gray-700 hover:bg-gray-200"
+    }`;
+
   return (
     <div>
       <NavBar />
       <div className="mx-auto max-w-3xl px-4 py-8">
         <h1 className="text-lg font-semibold text-gray-900 mb-1">Document Ingestion</h1>
         <p className="text-sm text-gray-500 mb-6">
-          Paste plain text (PDF/DOCX/OCR upload is scaffolded - see backend/app/scaffold/parsers.py).
-          Documents are chunked, embedded via the active LLM provider, and indexed in the vector store.
+          Paste plain text or upload a {SUPPORTED_UPLOAD_EXTENSIONS.join(" / ")} file. Documents are
+          parsed, chunked, embedded via the active LLM provider, and indexed in the vector store.
+          Scanned/image-only PDFs have no text layer and need OCR, which is not implemented yet.
         </p>
+
+        <div className="flex gap-2 mb-4">
+          <button type="button" onClick={() => switchMode("text")} className={tabClass(mode === "text")}>
+            Paste text
+          </button>
+          <button type="button" onClick={() => switchMode("file")} className={tabClass(mode === "file")}>
+            Upload file
+          </button>
+        </div>
 
         <form onSubmit={handleSubmit} className="space-y-4 bg-white p-6 rounded-lg shadow">
           <div>
-            <label className="block text-sm font-medium text-gray-700">Title</label>
+            <label className="block text-sm font-medium text-gray-700">
+              Title {mode === "file" && <span className="text-gray-400">(optional)</span>}
+            </label>
             <input
-              required
+              required={mode === "text"}
               value={title}
               onChange={(e) => setTitle(e.target.value)}
+              placeholder={mode === "file" ? "Defaults to the filename" : ""}
               className="mt-1 w-full rounded-md border border-gray-300 px-3 py-2 text-sm"
             />
           </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700">Document text</label>
-            <textarea
-              required
-              rows={10}
-              value={text}
-              onChange={(e) => setText(e.target.value)}
-              className="mt-1 w-full rounded-md border border-gray-300 px-3 py-2 text-sm font-mono"
-            />
-          </div>
+
+          {mode === "text" ? (
+            <div>
+              <label className="block text-sm font-medium text-gray-700">Document text</label>
+              <textarea
+                required
+                rows={10}
+                value={text}
+                onChange={(e) => setText(e.target.value)}
+                className="mt-1 w-full rounded-md border border-gray-300 px-3 py-2 text-sm font-mono"
+              />
+            </div>
+          ) : (
+            <div>
+              <label className="block text-sm font-medium text-gray-700">File</label>
+              <input
+                required
+                type="file"
+                accept={ACCEPT_ATTR}
+                onChange={handleFileChange}
+                className="mt-1 w-full rounded-md border border-gray-300 px-3 py-2 text-sm file:mr-3 file:rounded file:border-0 file:bg-gray-100 file:px-3 file:py-1.5 file:text-sm"
+              />
+              {file && (
+                <p className="mt-2 text-xs text-gray-500">
+                  {file.name} &middot; {(file.size / 1024).toFixed(1)} KB
+                </p>
+              )}
+            </div>
+          )}
+
           {error && <p className="text-sm text-red-600">{error}</p>}
           {status && <p className="text-sm text-green-700">{status}</p>}
           <button

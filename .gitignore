@@ -18,6 +18,10 @@ node_modules/
 frontend/dist/
 frontend/.vite/
 npm-debug.log*
+# `tsc -b` build outputs (see frontend/package.json "build")
+*.tsbuildinfo
+frontend/vite.config.js
+frontend/vite.config.d.ts
 
 # --- Env / secrets ---
 .env

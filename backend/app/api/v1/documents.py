@@ -2,9 +2,10 @@
 Document ingestion endpoints.
 
 Reference: FRD section "Document Ingestion Pipeline". Accepts plain text
-(JSON body) or a .txt/.md file upload; both funnel through
-app.services.ingestion.ingest_document. PDF/DOCX/OCR/email ingestion are
-scaffolded (not implemented) - see app/scaffold/parsers.py.
+(JSON body) or a file upload in any format registered in
+app.services.parsers.PARSERS (.txt/.md/.pdf/.docx today); all paths funnel
+through app.services.ingestion.ingest_document. OCR of scanned PDFs and
+email ingestion remain scaffolded - see app/scaffold/parsers.py.
 """
 from __future__ import annotations
 
@@ -19,10 +20,14 @@ from app.models.chunk import Chunk
 from app.models.document import Document
 from app.schemas.document import DocumentCreateText, DocumentOut
 from app.services.ingestion import ingest_document
+from app.services.parsers import (
+    CorruptDocument,
+    MissingParserDependency,
+    UnsupportedFormat,
+    parse_upload,
+)
 
 router = APIRouter(prefix="/documents", tags=["documents"])
-
-_ALLOWED_UPLOAD_SUFFIXES = (".txt", ".md")
 
 _INGEST_ROLES = (Role.ADMIN, Role.WORKFLOW_BUILDER, Role.ANALYST)
 
@@ -48,18 +53,24 @@ async def create_document(
     file: UploadFile | None = File(default=None),
 ) -> DocumentOut:
     if file is not None:
-        if not file.filename or not file.filename.lower().endswith(_ALLOWED_UPLOAD_SUFFIXES):
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "Only .txt/.md uploads are supported today. PDF/DOCX/OCR "
-                    "ingestion are scaffolded - see app/scaffold/parsers.py."
-                ),
-            )
+        if not file.filename:
+            raise HTTPException(status_code=400, detail="Uploaded file has no filename")
         raw_bytes = await file.read()
-        raw_text = raw_bytes.decode("utf-8", errors="replace")
+        try:
+            parsed = parse_upload(file.filename, raw_bytes)
+        except UnsupportedFormat as exc:
+            # 415 rather than 400: the request is well-formed, the media type isn't.
+            raise HTTPException(status_code=415, detail=str(exc)) from exc
+        except MissingParserDependency as exc:
+            # A deployment gap, not a client error - the format is supported
+            # but this install is missing its optional package.
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except CorruptDocument as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        raw_text = parsed.text
         doc_title = title or file.filename
-        source_type = file.filename.rsplit(".", 1)[-1].lower()
+        source_type = parsed.source_type
     elif text is not None:
         if not title:
             raise HTTPException(status_code=400, detail="`title` is required for text ingestion")
@@ -70,7 +81,13 @@ async def create_document(
         raise HTTPException(status_code=400, detail="Provide either `text` (+ `title`) or `file`")
 
     if not raw_text.strip():
-        raise HTTPException(status_code=400, detail="Document content is empty")
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Document content is empty. Scanned/image-only PDFs have no text "
+                "layer and need OCR, which is not implemented yet (FRD 4.2.2)."
+            ),
+        )
 
     document = ingest_document(
         db,

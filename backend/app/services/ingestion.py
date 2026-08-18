@@ -1,10 +1,11 @@
 """
 Document ingestion pipeline: store raw doc -> chunk -> embed -> index.
 
-Reference: FRD section "Document Ingestion Pipeline". Accepts plain text or
-.txt/.md uploads today. PDF/DOCX/OCR/email parsing are scaffolded in
-app/scaffold/parsers.py and plug into this same pipeline once implemented
-(they only need to produce plain text to hand to `ingest_document`).
+Reference: FRD section "Document Ingestion Pipeline". Format-specific
+parsing happens upstream in app/services/parsers.py (.txt/.md/.pdf/.docx);
+this module only ever sees plain text, so new formats plug in without
+touching chunking, embedding, or vector storage. OCR of scanned PDFs and
+email parsing remain scaffolded in app/scaffold/parsers.py.
 """
 from __future__ import annotations
 

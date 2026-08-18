@@ -21,6 +21,13 @@ bcrypt==4.0.1
 python-jose[cryptography]==3.3.0
 python-multipart==0.0.9
 
+# Document parsing (see app/services/parsers.py).
+# pypdf is required for .pdf ingestion; without it the API returns 503 for
+# PDF uploads instead of failing at import time. python-docx is optional -
+# .docx falls back to a stdlib zipfile+ElementTree reader when it is absent.
+pypdf==4.2.0
+python-docx==1.1.2
+
 # Vector store (optional at runtime - see app/services/vector_store.py).
 # If this package cannot be installed in an offline/sandboxed environment,
 # the application automatically falls back to the pure-python

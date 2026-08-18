@@ -82,7 +82,8 @@ functions, which is what makes both seams genuinely swappable.
 
 See `backend/app/scaffold/` - each file has FRD-section-referenced TODOs,
 no logic:
-- `parsers.py` - PDF / OCR / DOCX / email ingestion
+- `parsers.py` - OCR of scanned PDFs / email ingestion (PDF and DOCX are
+  implemented - see `backend/app/services/parsers.py`)
 - `workflow_builder.py` - no-code workflow DAG builder
 - `classification.py` - automated document classification
 - `field_extraction.py` - structured field extraction

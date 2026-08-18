@@ -23,6 +23,7 @@ from app.db.base import Base
 from app.db.session import get_db
 from app.main import app
 from app.models.user import User
+from tests.document_fixtures import _build_docx, _build_pdf
 
 _engine = create_engine(
     "sqlite://",
@@ -162,3 +163,85 @@ def test_analyst_can_read_usage_analytics(client):
     body = resp.json()
     assert "by_day" in body
     assert "by_user" in body
+
+
+def test_admin_can_upload_a_pdf(client):
+    """FRD 4.2.1 - the multipart path must parse a real PDF, not just .txt/.md."""
+    token = _login(client, "admin@synapse.example", "AdminPass123!")
+    pdf_bytes = _build_pdf(["Expense policy: meals are reimbursed up to 40 USD per day."])
+
+    resp = client.post(
+        "/api/v1/documents",
+        files={"file": ("expense-policy.pdf", pdf_bytes, "application/pdf")},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["source_type"] == "pdf"
+    assert body["title"] == "expense-policy.pdf"
+    assert body["chunk_count"] >= 1
+
+
+def test_admin_can_upload_a_docx_with_an_explicit_title(client):
+    """FRD 4.2.3 - and an explicit `title` form field wins over the filename."""
+    token = _login(client, "admin@synapse.example", "AdminPass123!")
+    docx_bytes = _build_docx(["Vendor Agreement", "Termination requires 60 days notice."])
+
+    resp = client.post(
+        "/api/v1/documents",
+        data={"title": "Vendor Agreement 2026"},
+        files={
+            "file": (
+                "vendor.docx",
+                docx_bytes,
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
+        },
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["source_type"] == "docx"
+    assert body["title"] == "Vendor Agreement 2026"
+    assert body["chunk_count"] >= 1
+
+
+def test_upload_of_unsupported_type_returns_415(client):
+    token = _login(client, "admin@synapse.example", "AdminPass123!")
+    resp = client.post(
+        "/api/v1/documents",
+        files={"file": ("backup.zip", b"PK", "application/zip")},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 415
+    assert ".pdf" in resp.json()["detail"]
+
+
+def test_upload_of_corrupt_pdf_returns_400(client):
+    token = _login(client, "admin@synapse.example", "AdminPass123!")
+    resp = client.post(
+        "/api/v1/documents",
+        files={"file": ("broken.pdf", b"not really a pdf", "application/pdf")},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 400
+
+
+def test_uploaded_pdf_is_retrievable_through_rag(client):
+    """The whole point of multi-format ingestion: PDF content must reach the
+    vector store and come back as a citation."""
+    token = _login(client, "admin@synapse.example", "AdminPass123!")
+    headers = {"Authorization": f"Bearer {token}"}
+    pdf_bytes = _build_pdf(["The security incident hotline is staffed 24 hours a day."])
+
+    upload = client.post(
+        "/api/v1/documents",
+        files={"file": ("security.pdf", pdf_bytes, "application/pdf")},
+        headers=headers,
+    )
+    assert upload.status_code == 200, upload.text
+    document_id = upload.json()["id"]
+
+    listing = client.get("/api/v1/documents", headers=headers)
+    assert listing.status_code == 200
+    assert any(d["id"] == document_id for d in listing.json())

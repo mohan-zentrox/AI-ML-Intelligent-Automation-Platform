@@ -17,28 +17,42 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
+/**
+ * Auth headers only - deliberately no Content-Type, so multipart uploads can
+ * reuse this and let the browser set the multipart boundary itself.
+ */
+function authHeaders(): Record<string, string> {
   const auth = getAuth();
+  if (auth?.apiKey) {
+    return { "X-API-Key": auth.apiKey };
+  }
+  if (auth?.token) {
+    return { Authorization: `Bearer ${auth.token}` };
+  }
+  return {};
+}
+
+async function parseError(response: Response): Promise<ApiError> {
+  let detail: string = response.statusText;
+  try {
+    const body = await response.json();
+    detail = body.detail ?? detail;
+  } catch {
+    // response had no JSON body
+  }
+  return new ApiError(response.status, typeof detail === "string" ? detail : JSON.stringify(detail));
+}
+
+async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
+    ...authHeaders(),
     ...(options.headers as Record<string, string> | undefined),
   };
-  if (auth?.apiKey) {
-    headers["X-API-Key"] = auth.apiKey;
-  } else if (auth?.token) {
-    headers["Authorization"] = `Bearer ${auth.token}`;
-  }
 
   const response = await fetch(`${API_BASE_URL}${path}`, { ...options, headers });
   if (!response.ok) {
-    let detail = response.statusText;
-    try {
-      const body = await response.json();
-      detail = body.detail ?? detail;
-    } catch {
-      // response had no JSON body
-    }
-    throw new ApiError(response.status, typeof detail === "string" ? detail : JSON.stringify(detail));
+    throw await parseError(response);
   }
   if (response.status === 204) {
     return undefined as T;
@@ -76,6 +90,32 @@ export function uploadText(title: string, text: string): Promise<DocumentOut> {
     method: "POST",
     body: JSON.stringify({ title, text }),
   });
+}
+
+/** Extensions the backend registers in app/services/parsers.PARSERS. */
+export const SUPPORTED_UPLOAD_EXTENSIONS = [".txt", ".md", ".pdf", ".docx"] as const;
+
+/**
+ * Multipart upload for .txt/.md/.pdf/.docx. Bypasses `request` because the
+ * browser must set the multipart Content-Type (with its boundary) itself;
+ * setting it manually produces a malformed body FastAPI cannot parse.
+ */
+export async function uploadFile(file: File, title?: string): Promise<DocumentOut> {
+  const form = new FormData();
+  form.append("file", file);
+  if (title) {
+    form.append("title", title);
+  }
+
+  const response = await fetch(`${API_BASE_URL}/documents`, {
+    method: "POST",
+    headers: authHeaders(),
+    body: form,
+  });
+  if (!response.ok) {
+    throw await parseError(response);
+  }
+  return (await response.json()) as DocumentOut;
 }
 
 export function listDocuments(): Promise<DocumentOut[]> {

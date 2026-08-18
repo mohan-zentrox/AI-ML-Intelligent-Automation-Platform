@@ -23,8 +23,32 @@ Lists the caller's own issued keys (hash never returned).
 ## Documents
 
 ### `POST /documents` (roles: admin, workflow_builder, analyst)
-Multipart form: `title` + `text`, OR `file` (.txt/.md only today).
-Returns `DocumentOut` (`id, title, source_type, char_count, chunk_count, created_at`).
+Multipart form: `title` + `text`, OR `file`.
+
+Supported upload formats (registry: `app.services.parsers.PARSERS`):
+
+| Extension | Parser | Notes |
+|---|---|---|
+| `.txt`, `.md` | stdlib | `source_type` is recorded as `text` |
+| `.pdf` | `pypdf` | text layer only; scanned/image-only pages need OCR (FRD 4.2.2, not implemented) |
+| `.docx` | `python-docx`, with a stdlib zip/XML fallback | paragraphs + table cells |
+
+`title` is optional for file uploads (defaults to the filename) and required
+for the `text` form field. Returns `DocumentOut` (`id, title, source_type,
+char_count, chunk_count, created_at`), where `source_type` is `text`, `pdf`,
+or `docx`.
+
+Errors:
+
+| Status | Cause |
+|---|---|
+| `400` | empty body, missing `title` for text, or a corrupt/unreadable file |
+| `415` | unsupported extension (e.g. `.zip`, legacy `.doc`) |
+| `503` | format is supported but its optional package is not installed (`pypdf`) |
+
+A PDF whose pages are all image-only extracts to empty text and returns
+`400` pointing at the unimplemented OCR path, rather than silently
+ingesting a zero-chunk document.
 
 ### `POST /documents/text` (roles: admin, workflow_builder, analyst)
 JSON convenience alias: `{ "title": string, "text": string }`.
