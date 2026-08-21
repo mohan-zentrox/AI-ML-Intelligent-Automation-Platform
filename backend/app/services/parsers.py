@@ -64,7 +64,7 @@ class ParsedDocument:
 
     `metadata` is deliberately format-specific and free-form; it is carried
     for downstream consumers (document classification - see
-    app/scaffold/classification.py) and is not required by ingestion.
+    app/services/classification.py) and is not required by ingestion.
     """
 
     text: str

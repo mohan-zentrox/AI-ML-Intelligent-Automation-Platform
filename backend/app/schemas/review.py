@@ -7,6 +7,11 @@ from pydantic import BaseModel
 
 class ReviewItemOut(BaseModel):
     id: str
+    # "answer" (low-confidence RAG answer) or "classification" (low-confidence
+    # document label). Drives how a client renders the item and what a valid
+    # `final_answer` looks like - see app/models/review_item.py.
+    item_type: str
+    document_id: str | None
     question: str
     proposed_answer: str
     citations: list[dict]
@@ -22,4 +27,6 @@ class ReviewItemOut(BaseModel):
 class ReviewDecisionRequest(BaseModel):
     decision: str  # approved|edited|rejected
     rationale: str
+    # For "edited" items: the corrected answer text, or - on a classification
+    # item - the corrected taxonomy label.
     final_answer: str | None = None

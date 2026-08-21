@@ -6,6 +6,9 @@ Reference: FRD section "Document Ingestion Pipeline". Accepts plain text
 app.services.parsers.PARSERS (.txt/.md/.pdf/.docx today); all paths funnel
 through app.services.ingestion.ingest_document. OCR of scanned PDFs and
 email ingestion remain scaffolded - see app/scaffold/parsers.py.
+
+Also serves the document taxonomy and re-classification (FRD 7) - see
+app/services/classification.py.
 """
 from __future__ import annotations
 
@@ -18,8 +21,9 @@ from app.core.security import Role
 from app.db.session import get_db
 from app.models.chunk import Chunk
 from app.models.document import Document
-from app.schemas.document import DocumentCreateText, DocumentOut
-from app.services.ingestion import ingest_document
+from app.schemas.document import CategoryOut, DocumentCreateText, DocumentOut, TaxonomyOut
+from app.services.classification import TAXONOMY, TAXONOMY_VERSION
+from app.services.ingestion import classify_and_route, ingest_document
 from app.services.parsers import (
     CorruptDocument,
     MissingParserDependency,
@@ -30,6 +34,9 @@ from app.services.parsers import (
 router = APIRouter(prefix="/documents", tags=["documents"])
 
 _INGEST_ROLES = (Role.ADMIN, Role.WORKFLOW_BUILDER, Role.ANALYST)
+# Re-running the classifier costs a provider call and overwrites a label a
+# reviewer may already have confirmed, so it is not open to Analysts.
+_RECLASSIFY_ROLES = (Role.ADMIN, Role.WORKFLOW_BUILDER)
 
 
 def _to_document_out(db: Session, document: Document) -> DocumentOut:
@@ -41,6 +48,11 @@ def _to_document_out(db: Session, document: Document) -> DocumentOut:
         char_count=document.char_count,
         chunk_count=chunk_count or 0,
         created_at=document.created_at,
+        classification_label=document.classification_label,
+        classification_confidence=document.classification_confidence,
+        classification_status=document.classification_status,
+        taxonomy_version=document.taxonomy_version,
+        classified_at=document.classified_at,
     )
 
 
@@ -118,8 +130,66 @@ def create_document_json(
 
 @router.get("", response_model=list[DocumentOut])
 def list_documents(
+    label: str | None = None,
     db: Session = Depends(get_db),
     principal: Principal = Depends(require_role(*Role)),
 ) -> list[DocumentOut]:
-    documents = db.query(Document).order_by(Document.created_at.desc()).all()
+    """List ingested documents, newest first.
+
+    `label` filters by classification (FRD 7), which is what makes the
+    taxonomy useful for routing rather than decorative. Unknown labels 400
+    rather than silently returning an empty list, so a typo is obvious.
+    """
+    query = db.query(Document)
+    if label is not None:
+        if label not in TAXONOMY:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unknown label '{label}'. Known labels: {sorted(TAXONOMY)}",
+            )
+        query = query.filter(Document.classification_label == label)
+    documents = query.order_by(Document.created_at.desc()).all()
     return [_to_document_out(db, d) for d in documents]
+
+
+@router.get("/taxonomy", response_model=TaxonomyOut)
+def get_taxonomy(
+    principal: Principal = Depends(require_role(*Role)),
+) -> TaxonomyOut:
+    """The active document taxonomy (FRD 7.1).
+
+    Served rather than duplicated client-side so label pickers and the
+    review UI cannot drift out of sync with the backend's label set.
+    """
+    return TaxonomyOut(
+        version=TAXONOMY_VERSION,
+        categories=[
+            CategoryOut(label=c.label, description=c.description) for c in TAXONOMY.values()
+        ],
+    )
+
+
+@router.post("/{document_id}/reclassify", response_model=DocumentOut)
+def reclassify_document(
+    document_id: str,
+    db: Session = Depends(get_db),
+    principal: Principal = Depends(require_role(*_RECLASSIFY_ROLES)),
+) -> DocumentOut:
+    """Re-run classification for one document (FRD 7.1).
+
+    The path for documents ingested under a superseded `taxonomy_version`, or
+    whose label a reviewer rejected. Goes through the same
+    `classify_and_route` used at ingest time, so the outcome - including a
+    fresh review item when confidence is low - is identical to a first-time
+    classification.
+    """
+    document = db.query(Document).filter_by(id=document_id).first()
+    if not document:
+        raise HTTPException(status_code=404, detail="Document not found")
+    if not document.raw_text.strip():
+        raise HTTPException(
+            status_code=400, detail="Document has no text to classify."
+        )
+
+    classify_and_route(db, document, actor_id=principal.user_id)
+    return _to_document_out(db, document)

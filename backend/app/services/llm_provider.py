@@ -32,6 +32,7 @@ import math
 import re
 import time
 from abc import ABC, abstractmethod
+from collections import Counter
 from dataclasses import dataclass
 
 from app.core.config import get_settings
@@ -84,6 +85,12 @@ class LLMProvider(ABC):
 _EMBEDDING_DIM = 256
 _TOKEN_RE = re.compile(r"[A-Za-z0-9_']+")
 
+# The mock classifier's "I have no basis for a label" answer. `unknown` is
+# deliberately outside any taxonomy, so classification.py parses it as
+# UNKNOWN_LABEL at confidence 0.0 and routes the document to human review
+# rather than picking a category at random.
+_UNCLASSIFIABLE_RESPONSE = "LABEL: unknown\nCONFIDENCE: 0.0"
+
 
 def _tokenize(text: str) -> list[str]:
     return _TOKEN_RE.findall(text.lower())
@@ -118,10 +125,17 @@ class MockProvider(LLMProvider):
     """Deterministic local provider used by default (LLM_PROVIDER=mock).
 
     - Embeddings: hashing bag-of-words vectors (see `_hashing_embed`).
-    - Completions: template-based extractive "answer" that quotes the
-      highest-signal sentences from the supplied grounded context and cites
-      them. It never invents facts outside the provided context, which
-      makes the refusal / grounding behaviour in rag.py trivially testable.
+    - Completions: dispatched on prompt shape, because the platform issues
+      two structurally different kinds of completion:
+        * grounded RAG prompts (CONTEXT/QUESTION, built by rag.py) get a
+          template-based extractive "answer" that quotes the highest-signal
+          sentences from the supplied context and cites them. It never
+          invents facts outside that context, which makes the refusal /
+          grounding behaviour in rag.py trivially testable.
+        * constrained-label classification prompts (CANDIDATE LABELS/
+          DOCUMENT, built by classification.py) get a `LABEL:`/`CONFIDENCE:`
+          response chosen by lexical evidence, so FRD 7 classification is
+          exercisable offline on the same terms as RAG.
     """
 
     name = "mock"
@@ -142,7 +156,7 @@ class MockProvider(LLMProvider):
 
     def complete(self, prompt: str, *, max_tokens: int = 512) -> CompletionResult:
         start = time.perf_counter()
-        text = self._template_answer(prompt)
+        text = self._respond(prompt)
         latency_ms = (time.perf_counter() - start) * 1000
         prompt_tokens = len(_tokenize(prompt))
         completion_tokens = len(_tokenize(text))
@@ -156,6 +170,75 @@ class MockProvider(LLMProvider):
             cost_usd=0.0,
             latency_ms=latency_ms,
         )
+
+    @staticmethod
+    def _respond(prompt: str) -> str:
+        """Route to the template matching the prompt's shape.
+
+        Sniffing the prompt (rather than adding a `task` argument to
+        `LLMProvider.complete`) keeps the provider ABC minimal and stable,
+        which is the whole point of that seam - a real provider needs no
+        knowledge that classification exists.
+        """
+        if "CANDIDATE LABELS:" in prompt:
+            return MockProvider._template_classification(prompt)
+        return MockProvider._template_answer(prompt)
+
+    @staticmethod
+    def _template_classification(prompt: str) -> str:
+        """Deterministic stand-in for a real classifier (FRD 7).
+
+        Scores every candidate label by how much of its description shows up
+        in the document, weighting each description token by 1/df across the
+        label set so boilerplate shared by several descriptions ("document",
+        "date") carries almost no signal while distinctive terms
+        ("remittance", "indemnification") carry a full point.
+
+        Confidence blends two transparent quantities: `share` (how much of
+        the total evidence the winner holds) and `margin` (how far clear of
+        the runner-up it is). A document matching one category cleanly
+        scores high; a document matching two equally well scores low and
+        lands in the review queue, which is the behaviour worth testing.
+        Zero evidence yields `unknown`/0.0 rather than a coin flip.
+        """
+        labels_match = re.search(r"CANDIDATE LABELS:\n(.*?)\n\nDOCUMENT:", prompt, re.DOTALL)
+        doc_match = re.search(r"\nDOCUMENT:\n(.*?)\n\nINSTRUCTIONS:", prompt, re.DOTALL)
+        if not labels_match or not doc_match:
+            return _UNCLASSIFIABLE_RESPONSE
+
+        entries: list[tuple[str, set[str]]] = []
+        for line in labels_match.group(1).splitlines():
+            entry_match = re.match(r"\[([^\]]+)\]\s*(.+)", line.strip())
+            if not entry_match:
+                continue
+            description_tokens = {t for t in _tokenize(entry_match.group(2)) if len(t) > 3}
+            entries.append((entry_match.group(1), description_tokens))
+        if not entries:
+            return _UNCLASSIFIABLE_RESPONSE
+
+        document_frequency: Counter[str] = Counter()
+        for _, tokens in entries:
+            document_frequency.update(tokens)
+
+        doc_tokens = set(_tokenize(doc_match.group(1)))
+        scored = sorted(
+            (
+                (sum(1.0 / document_frequency[t] for t in tokens & doc_tokens), label)
+                for label, tokens in entries
+            ),
+            key=lambda pair: (-pair[0], pair[1]),
+        )
+
+        top_score, top_label = scored[0]
+        total = sum(score for score, _ in scored)
+        if top_score <= 0 or total <= 0:
+            return _UNCLASSIFIABLE_RESPONSE
+
+        runner_up = scored[1][0] if len(scored) > 1 else 0.0
+        share = top_score / total
+        margin = (top_score - runner_up) / top_score
+        confidence = round(min(1.0, 0.5 * share + 0.5 * margin), 4)
+        return f"LABEL: {top_label}\nCONFIDENCE: {confidence}"
 
     @staticmethod
     def _template_answer(prompt: str) -> str:

@@ -87,15 +87,31 @@ persistent ChromaDB collection, once `chromadb` is installed).
   PDF returns a 503 (not a 500) when `pypdf` is absent. Pages with no text
   layer are reported in `ParsedDocument.metadata["empty_pages"]` as the
   hand-off signal for OCR, which is still scaffolded (FRD 4.2.2).
+- **Automated document classification** (FRD 7): every ingested document is
+  tagged with exactly one label from a versioned taxonomy
+  (`backend/app/services/classification.py`) via a constrained-label prompt
+  over the *same* `LLMProvider` seam RAG uses - no second model stack. The
+  taxonomy is a one-entry-per-category registry, served to clients at
+  `GET /api/v1/documents/taxonomy` so label pickers can't drift, and
+  `TAXONOMY_VERSION` is stamped on every stored label so stale
+  classifications are findable and re-runnable via
+  `POST /api/v1/documents/{id}/reclassify`. `GET /api/v1/documents?label=`
+  filters by category. Classification never fails an ingest: an
+  off-taxonomy label, an unparseable response, or a provider outage all
+  degrade to `unknown`/0.0 confidence and route to a human.
 - **Grounded RAG Q&A**: `POST /api/v1/query` - real cosine-similarity
   retrieval, grounded prompt construction with numbered citations,
   transparent confidence scoring, and a documented insufficient-context
   refusal path when nothing clears `SIMILARITY_THRESHOLD`.
-- **Human-in-the-loop review**: low-confidence answers are written to a
-  `ReviewItem` queue; `GET /api/v1/review/queue` and
+- **Human-in-the-loop review**: low-confidence answers *and* low-confidence
+  classifications are written to one `ReviewItem` queue (`item_type`
+  distinguishes them); `GET /api/v1/review/queue` and
   `POST /api/v1/review/queue/{id}/decision` let a Reviewer/Admin
   approve/edit/reject with a mandatory rationale, feeding a `feedback`
-  table for future eval-dataset building.
+  table for future eval-dataset building. A resolved classification is
+  written back onto the document (`confirmed`/`corrected`/`rejected`), so
+  the queue actually governs what downstream routing reads rather than
+  just recording opinions - a rejected label is cleared, not left in place.
 - **Usage/cost tracking**: every provider call logs tokens, cost (`$0` for
   the mock), and latency; `GET /api/v1/analytics/usage` aggregates by day
   and by user.
@@ -111,8 +127,9 @@ All under `backend/app/scaffold/`, each with FRD-section references:
 - `parsers.py` - OCR of scanned PDFs / email ingestion (PDF and DOCX are
   implemented - see `backend/app/services/parsers.py`)
 - `workflow_builder.py` - no-code workflow DAG builder
-- `classification.py` - automated document classification
-- `field_extraction.py` - structured field extraction
+- `field_extraction.py` - structured field extraction (would key its
+  per-category schemas off the taxonomy in
+  `backend/app/services/classification.py`)
 - `promptfoo/promptfooconfig.yaml` - CI-gated RAG eval suite (config
   present, test fixtures empty, **not** wired into `.github/workflows/ci.yml`
   yet - that's the next step once real fixtures exist)
@@ -122,10 +139,14 @@ All under `backend/app/scaffold/`, each with FRD-section references:
 Python 3.11, Node 22, and git are all available here, so the following were
 executed rather than hand-reviewed:
 
-- `pytest` - **57 passed** (`backend/.venv`, lean install: fastapi,
+- `pytest` - **86 passed** (`backend/.venv`, lean install: fastapi,
   sqlalchemy, passlib/bcrypt, python-jose, python-multipart, httpx, pytest,
-  ruff, pypdf, python-docx). This is the zero-external-dependency path:
-  `LLM_PROVIDER=mock`, `VECTOR_STORE_BACKEND=inmemory`, SQLite in-memory.
+  ruff, pypdf, python-docx, alembic). This is the zero-external-dependency
+  path: `LLM_PROVIDER=mock`, `VECTOR_STORE_BACKEND=inmemory`, SQLite
+  in-memory.
+- `alembic upgrade head`, `alembic downgrade base`, and re-upgrade against a
+  scratch SQLite file - both migrations (`0001`, `0002`) run clean in both
+  directions.
 - `ruff check app tests` - clean.
 - `npm install && npm run lint && npm run build` - eslint clean, `tsc -b`
   clean, vite production bundle built.
@@ -152,7 +173,7 @@ backend/app/
   models/      User, ApiKey, Document, Chunk, QueryLog, ReviewItem, Feedback, UsageLog
   schemas/     Pydantic request/response models
   api/v1/      auth, documents, query, review, analytics routers
-  services/    chunking, parsers (PDF/DOCX/text), llm_provider (ABC+Mock+LiteLLM), vector_store (ABC+InMemory+Chroma), rag, ingestion
+  services/    chunking, parsers (PDF/DOCX/text), classification (taxonomy + constrained-label prompt), llm_provider (ABC+Mock+LiteLLM), vector_store (ABC+InMemory+Chroma), rag, ingestion
   scaffold/    documented, unimplemented extension points (see above)
 backend/alembic/   migration environment + initial schema migration
 backend/tests/     pytest suite (service-layer + API smoke tests)

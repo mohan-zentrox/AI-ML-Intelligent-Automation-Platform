@@ -61,6 +61,19 @@ class Settings(BaseSettings):
     # review queue instead of (or in addition to) being returned directly.
     REVIEW_CONFIDENCE_THRESHOLD: float = 0.55
 
+    # --- Document classification (FRD 7) ---
+    # Auto-classify every ingested document into the taxonomy defined in
+    # app/services/classification.py. Disable to ingest without spending a
+    # provider call per document.
+    CLASSIFICATION_ENABLED: bool = True
+    # Only the first N characters are sent to the classifier: category signal
+    # is concentrated at the top of a document, and this bounds cost/latency
+    # to something predictable regardless of document size.
+    CLASSIFICATION_SAMPLE_CHARS: int = 4000
+    # Below this classification confidence the label is not trusted for
+    # downstream routing and the document is queued for human confirmation.
+    CLASSIFICATION_REVIEW_THRESHOLD: float = 0.55
+
     # --- CORS ---
     CORS_ORIGINS: list[str] = ["http://localhost:5173", "http://localhost:3000"]
 

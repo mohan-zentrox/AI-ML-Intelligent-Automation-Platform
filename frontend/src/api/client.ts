@@ -76,6 +76,16 @@ export function login(email: string, password: string): Promise<LoginResponse> {
 }
 
 // --- Documents ---
+
+/** Provenance of a document's label - see backend ClassificationStatus. */
+export type ClassificationStatus =
+  | "unclassified"
+  | "auto"
+  | "pending_review"
+  | "confirmed"
+  | "corrected"
+  | "rejected";
+
 export interface DocumentOut {
   id: string;
   title: string;
@@ -83,6 +93,35 @@ export interface DocumentOut {
   char_count: number;
   chunk_count: number;
   created_at: string;
+  /** Null when unclassified, unclassifiable, or rejected by a reviewer. */
+  classification_label: string | null;
+  classification_confidence: number | null;
+  classification_status: ClassificationStatus;
+  taxonomy_version: string | null;
+  classified_at: string | null;
+}
+
+export interface Category {
+  label: string;
+  description: string;
+}
+
+export interface Taxonomy {
+  version: string;
+  categories: Category[];
+}
+
+/**
+ * The active document taxonomy. Fetched rather than hardcoded so label
+ * pickers cannot drift out of sync with the backend's label set.
+ */
+export function getTaxonomy(): Promise<Taxonomy> {
+  return request<Taxonomy>("/documents/taxonomy");
+}
+
+/** Re-run classification for one document (Admin / Workflow Builder only). */
+export function reclassifyDocument(documentId: string): Promise<DocumentOut> {
+  return request<DocumentOut>(`/documents/${documentId}/reclassify`, { method: "POST" });
 }
 
 export function uploadText(title: string, text: string): Promise<DocumentOut> {
@@ -118,8 +157,9 @@ export async function uploadFile(file: File, title?: string): Promise<DocumentOu
   return (await response.json()) as DocumentOut;
 }
 
-export function listDocuments(): Promise<DocumentOut[]> {
-  return request<DocumentOut[]>("/documents");
+export function listDocuments(label?: string): Promise<DocumentOut[]> {
+  const qs = label ? `?label=${encodeURIComponent(label)}` : "";
+  return request<DocumentOut[]>(`/documents${qs}`);
 }
 
 // --- Query ---
@@ -148,8 +188,19 @@ export function askQuestion(question: string): Promise<QueryResponse> {
 }
 
 // --- Review queue ---
+
+/**
+ * "answer"         - low-confidence RAG answer; `proposed_answer` is the text.
+ * "classification" - low-confidence document label; `proposed_answer` is the
+ *                    proposed taxonomy label and `final_answer` on an edit
+ *                    must be a label from the taxonomy.
+ */
+export type ReviewItemType = "answer" | "classification";
+
 export interface ReviewItem {
   id: string;
+  item_type: ReviewItemType;
+  document_id: string | null;
   question: string;
   proposed_answer: string;
   citations: Citation[];
@@ -160,9 +211,15 @@ export interface ReviewItem {
   created_at: string;
 }
 
-export function listReviewQueue(status?: string): Promise<ReviewItem[]> {
-  const qs = status ? `?status=${encodeURIComponent(status)}` : "";
-  return request<ReviewItem[]>(`/review/queue${qs}`);
+export function listReviewQueue(
+  status?: string,
+  itemType?: ReviewItemType
+): Promise<ReviewItem[]> {
+  const params = new URLSearchParams();
+  if (status) params.set("status", status);
+  if (itemType) params.set("item_type", itemType);
+  const qs = params.toString();
+  return request<ReviewItem[]>(`/review/queue${qs ? `?${qs}` : ""}`);
 }
 
 export function submitReviewDecision(

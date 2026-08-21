@@ -16,7 +16,9 @@ is enforced structurally, not just by prompt instruction:
 - The default `MockProvider` (`app/services/llm_provider.py`) goes
   further and is *structurally* incapable of ungrounded generation: its
   "answer" is extracted verbatim from the supplied context, so grounding
-  failures in the mock path are a code bug, not a probabilistic risk.
+  failures in the mock path are a code bug, not a probabilistic risk. Its
+  classification replies are constrained the same way - it can only return
+  a label listed in the prompt, or `unknown`.
 - When a real provider (`LiteLLMProvider`) is enabled, grounding relies on
   prompt instructions plus the citation/refusal checks below as a
   backstop - this is the seam where `backend/app/scaffold/promptfoo/`
@@ -52,6 +54,33 @@ Refusals are *not* routed to review - a documented, correct refusal is
 already a safe outcome and does not need human adjudication; only
 low-confidence *answers* do.
 
+### Classification review (FRD 7)
+
+Document classifications are governed on the same terms and share the same
+queue (`review_items.item_type` distinguishes them), so reviewers work in
+one place and every decision lands in the same `feedback` table:
+
+- A label below `CLASSIFICATION_REVIEW_THRESHOLD` (default `0.55`), or one
+  the classifier could not produce at all, is **provisional**: the document
+  is stored with `classification_status=pending_review` and, when the label
+  is unusable, no label at all. A sentinel string such as `"unknown"` is
+  never written, because downstream routing asks "is this classified?" and
+  a sentinel would answer yes.
+- A resolved classification is written back onto the document, so what
+  downstream consumers read is the *confirmed* or *corrected* label plus the
+  fact that a human stands behind it (`confirmed` / `corrected`), not a
+  model guess.
+- A **rejected** label is cleared rather than left in place: a category a
+  human has explicitly called wrong must not keep driving routing.
+- A reviewer cannot invent a category. An `edited` decision must name a real
+  taxonomy label, and an item whose proposed label is unusable cannot be
+  approved at all - there is nothing to approve.
+- Classification confidence is the model's own stated confidence, parsed
+  from its response, not a number we infer on its behalf. Under the default
+  `MockProvider` it is a transparent lexical-evidence score (share of total
+  evidence + margin over the runner-up), so the routing decision is
+  inspectable rather than a black box.
+
 ## 5. Feedback Loop
 
 Every reviewer decision is persisted to the `feedback` table
@@ -63,8 +92,10 @@ examples - drive the eval gate over time.
 
 ## 6. Usage & Cost Transparency
 
-Every embedding/completion call is logged (`usage_logs` table) with
-provider, model, token counts, cost, and latency, surfaced via
-`GET /api/v1/analytics/usage`. This applies identically to the mock
+Every provider call is logged (`usage_logs` table) with provider, model,
+token counts, cost, and latency, surfaced via
+`GET /api/v1/analytics/usage`. That includes the classification call made
+at ingest time (`operation=classification`), so enabling auto-classification
+cannot quietly add unattributed spend. This applies identically to the mock
 provider (always `$0.00`, real token counts) and any real provider, so
 switching providers never silently loses cost visibility.

@@ -35,8 +35,8 @@ Supported upload formats (registry: `app.services.parsers.PARSERS`):
 
 `title` is optional for file uploads (defaults to the filename) and required
 for the `text` form field. Returns `DocumentOut` (`id, title, source_type,
-char_count, chunk_count, created_at`), where `source_type` is `text`, `pdf`,
-or `docx`.
+char_count, chunk_count, created_at`, plus the classification fields below),
+where `source_type` is `text`, `pdf`, or `docx`.
 
 Errors:
 
@@ -53,8 +53,41 @@ ingesting a zero-chunk document.
 ### `POST /documents/text` (roles: admin, workflow_builder, analyst)
 JSON convenience alias: `{ "title": string, "text": string }`.
 
-### `GET /documents` (any authenticated role)
-Lists all ingested documents with chunk counts.
+### `GET /documents?label=<label>` (any authenticated role)
+Lists all ingested documents with chunk counts, newest first. `label`
+filters by classification; an unknown label returns `400` rather than an
+empty list.
+
+## Classification (FRD 7)
+
+Every ingested document is classified into a versioned taxonomy at ingest
+time (unless `CLASSIFICATION_ENABLED=false`). `DocumentOut` carries:
+
+| Field | Meaning |
+|---|---|
+| `classification_label` | the assigned category, or `null` if unclassified/unclassifiable/rejected |
+| `classification_confidence` | model confidence in `[0,1]`; `null` once a human has supplied the label |
+| `classification_status` | `unclassified`, `auto`, `pending_review`, `confirmed`, `corrected`, or `rejected` |
+| `taxonomy_version` | the taxonomy the label was produced under |
+| `classified_at` | when the classifier last ran |
+
+A classification at or above `CLASSIFICATION_REVIEW_THRESHOLD` is stored
+with status `auto`. Below it - or when the classifier returns no usable
+label - the label is provisional (`pending_review`) and a classification
+`ReviewItem` is opened. An unusable label is stored as `null`, never as the
+string `"unknown"`, so downstream routing cannot mistake it for a category.
+
+### `GET /documents/taxonomy` (any authenticated role)
+Returns `{ version, categories: [{ label, description }] }` - the active
+label set, so clients render pickers without hardcoding it.
+
+### `POST /documents/{document_id}/reclassify` (roles: admin, workflow_builder)
+Re-runs classification for one document and returns the updated
+`DocumentOut`. Used for documents ingested under a superseded
+`taxonomy_version` or whose label was rejected. Any earlier *pending*
+classification review for that document is withdrawn, so one document never
+has two competing proposals in the queue. `404` if the document does not
+exist, `400` if it has no text.
 
 ## Query (Grounded RAG)
 
@@ -77,21 +110,43 @@ insufficient-context message - the LLM is never called in that case.
 
 ## Review Queue
 
-### `GET /review/queue?status=pending` (roles: admin, reviewer)
+One queue carries two kinds of item, distinguished by `item_type`:
+
+| `item_type` | Source | `proposed_answer` holds | `document_id` |
+|---|---|---|---|
+| `answer` | low-confidence RAG answer | the generated answer text | `null` |
+| `classification` | low-confidence document label | the proposed taxonomy label | the document |
+
+### `GET /review/queue?status=pending&item_type=classification` (roles: admin, reviewer)
 Lists `ReviewItem` rows, optionally filtered by status
-(`pending|approved|edited|rejected`).
+(`pending|approved|edited|rejected`) and by `item_type`
+(`answer|classification`). An unknown `item_type` returns `400`.
 
 ### `POST /review/queue/{review_item_id}/decision` (roles: admin, reviewer)
 Body: `{ "decision": "approved"|"edited"|"rejected", "rationale": string, "final_answer"?: string }`
 Rationale is required for every decision. Also writes a `Feedback` row for
 future eval-dataset building.
 
+For a `classification` item the decision is written back onto the document:
+
+| Decision | Effect on the document |
+|---|---|
+| `approved` | label kept, status becomes `confirmed` |
+| `edited` | label replaced by `final_answer`, status becomes `corrected`, model confidence cleared |
+| `rejected` | label cleared to `null`, status becomes `rejected` |
+
+Two extra validations apply to classification items, both `400`:
+`final_answer` on an `edited` decision must be a real taxonomy label, and an
+item whose proposed label is unusable (`unknown`) cannot be `approved` -
+the reviewer has to supply a label or reject it.
+
 ## Analytics
 
 ### `GET /analytics/usage` (roles: admin, analyst)
 Returns per-day and per-user aggregates (`total_calls, total_tokens,
-total_cost_usd, avg_latency_ms`) computed from every logged provider call
-(embedding + completion).
+total_cost_usd, avg_latency_ms`) computed from every logged provider call.
+Each row's `operation` is `embedding`, `completion`, or `classification`, so
+the cost of auto-classifying an ingest is visible separately from RAG.
 
 ## Health
 
