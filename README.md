@@ -26,7 +26,20 @@ uvicorn app.main:app --reload
 Backend comes up on `http://localhost:8000` (`/docs` for Swagger UI). On
 first startup it creates a local SQLite DB (`synapse_local.db`) and seeds
 the six `T6-*` role accounts from `docs/TEAM.md` (password `ChangeMe123!`
-for all of them - local dev only).
+for all of them).
+
+Seeding is **gated on `ENVIRONMENT=local`** (the default). Those credentials
+are published in this repo, so any other `ENVIRONMENT` value skips seeding
+and you create real users yourself; setting `SEED_DEMO_USERS=true` outside
+`local` is rejected at startup rather than silently obeyed.
+
+`requirements.txt` is the core set only. The optional provider backends
+(`chromadb`, `litellm`) live in `requirements-optional.txt` and are needed
+only if you switch away from the defaults:
+
+```bash
+pip install -r requirements.txt -r requirements-optional.txt
+```
 
 Frontend:
 ```bash
@@ -62,7 +75,8 @@ LITELLM_EMBEDDING_MODEL=text-embedding-3-small
 OPENAI_API_KEY=sk-...                  # or ANTHROPIC_API_KEY, etc.
 ```
 
-No code changes needed - `get_llm_provider()` in
+Install `requirements-optional.txt` first (that is where `litellm` is
+pinned). No code changes needed - `get_llm_provider()` in
 `backend/app/services/llm_provider.py` picks `LiteLLMProvider` based on
 `LLM_PROVIDER` alone. The same pattern applies to the vector store
 (`VECTOR_STORE_BACKEND=chroma` to switch from the in-memory fallback to a
@@ -134,30 +148,78 @@ All under `backend/app/scaffold/`, each with FRD-section references:
   present, test fixtures empty, **not** wired into `.github/workflows/ci.yml`
   yet - that's the next step once real fixtures exist)
 
+## Deployment Notes
+
+Two things bite when moving off localhost:
+
+1. **`VITE_API_BASE_URL` is build-time, not runtime.** Vite inlines `VITE_*`
+   into the JS bundle during `npm run build`, so setting it on a running
+   container has no effect. Pass it as a Docker build arg (already wired
+   through `docker-compose.yml`):
+   ```bash
+   docker compose build --build-arg VITE_API_BASE_URL=https://your-api.example.com/api/v1
+   ```
+2. **`SECRET_KEY` and `CORS_ORIGINS` must both be set.** The app refuses to
+   start with the placeholder `SECRET_KEY` unless `ENVIRONMENT=local`, and a
+   deployed frontend is on a different origin than the API, so it has to be
+   listed in `CORS_ORIGINS` or every browser request fails preflight.
+
+The backend honours `$PORT` (falling back to 8000), which is how Render, Fly,
+Cloud Run and Hugging Face Spaces assign a listen port.
+
+One design caveat worth knowing before picking a host: `VECTOR_STORE_BACKEND=inmemory`
+loses every embedding on restart, and `chroma` needs a persistent disk, which
+most free tiers do not provide. For a free deployment the durable option is a
+pgvector-backed `VectorStore` implementation against the same Postgres you are
+already running - a new class behind the existing ABC in
+`backend/app/services/vector_store.py`, no call-site changes.
+
 ## Verification (what was actually run in this environment)
 
 Python 3.11, Node 22, and git are all available here, so the following were
 executed rather than hand-reviewed:
 
-- `pytest` - **86 passed** (`backend/.venv`, lean install: fastapi,
-  sqlalchemy, passlib/bcrypt, python-jose, python-multipart, httpx, pytest,
-  ruff, pypdf, python-docx, alembic). This is the zero-external-dependency
-  path: `LLM_PROVIDER=mock`, `VECTOR_STORE_BACKEND=inmemory`, SQLite
-  in-memory.
+- `pip install -r requirements.txt` - resolves clean, and
+  `pip install --dry-run -r requirements.txt -r requirements-optional.txt`
+  confirms the optional pins still co-resolve with the core ones.
+- `pytest` - **116 passed** (`backend/.venv`). This is the
+  zero-external-dependency path: `LLM_PROVIDER=mock`,
+  `VECTOR_STORE_BACKEND=inmemory`, SQLite in-memory.
+- `python -c "import app.main"` as a *first* import, plus a real
+  `uvicorn` boot and a `/health` probe. Both are also enforced by the
+  `backend-boots` CI job, because the test suite cannot catch a boot failure:
+  `conftest.py` imports `app.db.base` before `app.main`, and that ordering
+  hides import cycles.
 - `alembic upgrade head`, `alembic downgrade base`, and re-upgrade against a
   scratch SQLite file - both migrations (`0001`, `0002`) run clean in both
   directions.
 - `ruff check app tests` - clean.
-- `npm install && npm run lint && npm run build` - eslint clean, `tsc -b`
-  clean, vite production bundle built.
+- A full manual pass against the running stack: login, JWT + `X-API-Key` auth,
+  the whole RBAC matrix in `docs/TEAM.md` (all 9 allow/deny cells), text +
+  multipart PDF/DOCX ingestion, classification, grounded query, the refusal
+  path, the review queue, a classification correction writing back to the
+  document, and the usage dashboard.
+- `npm ci && npm run lint && npm run build` - eslint clean, `tsc -b` clean,
+  vite production bundle built.
 
 Not exercised here:
 
-- `chromadb` and `litellm` were not installed (both are optional at runtime;
-  the app falls back to `InMemoryVectorStore` / `MockProvider`). The Docker
-  images and Postgres path were likewise not built or run.
+- `chromadb` and `litellm` are resolved but not installed (both are optional
+  at runtime; the app falls back to `InMemoryVectorStore` / `MockProvider`).
+  The Docker images and the Postgres path were likewise not built or run.
 - OCR of scanned PDFs and email ingestion are unimplemented by design - see
   `backend/app/scaffold/parsers.py`.
+
+Known, accepted `npm audit` findings:
+
+- `vite` / `esbuild` (1 high, 1 moderate) affect the **dev server only**. The
+  shipped artifact is static files served by nginx, so it is not exposed. The
+  advisory's fix is a Vite major bump, deferred deliberately.
+- `react-router` open redirect (moderate) is **not reachable here**: every
+  `navigate()` / `<Link to=>` target in `frontend/src` is a hardcoded literal,
+  with no user-controlled input. The only patched version is a v6 -> v7 major,
+  so it is tracked rather than force-upgraded. Re-evaluate if a redirect
+  target ever becomes dynamic.
 
 PDF/DOCX test fixtures are **built in-process** by
 `backend/tests/document_fixtures.py` (a real PDF byte stream with a proper
@@ -168,15 +230,18 @@ binaries and no network.
 
 ```
 backend/app/
-  core/        config, security (JWT/API keys/roles), FastAPI deps (RBAC)
-  db/          SQLAlchemy session + declarative base + seed data
+  core/        config (+ startup safety checks), security (JWT/API keys/roles), FastAPI deps (RBAC)
+  db/          base_class (Base only) + base (model registry hub) + session/seed
   models/      User, ApiKey, Document, Chunk, QueryLog, ReviewItem, Feedback, UsageLog
   schemas/     Pydantic request/response models
   api/v1/      auth, documents, query, review, analytics routers
   services/    chunking, parsers (PDF/DOCX/text), classification (taxonomy + constrained-label prompt), llm_provider (ABC+Mock+LiteLLM), vector_store (ABC+InMemory+Chroma), rag, ingestion
   scaffold/    documented, unimplemented extension points (see above)
 backend/alembic/   migration environment + initial schema migration
-backend/tests/     pytest suite (service-layer + API smoke tests)
+backend/tests/     pytest suite (service-layer + API smoke + startup-guard tests)
+backend/requirements.txt          core dependencies
+backend/requirements-optional.txt chromadb + litellm (opt-in backends)
+frontend/nginx.conf               SPA history-mode fallback for the container
 frontend/src/      React+TS+Tailwind SPA (pages, api client, auth store)
 docs/              architecture, API reference, team/RBAC, responsible AI policy
 .github/workflows/ CI: lint + pytest + container build

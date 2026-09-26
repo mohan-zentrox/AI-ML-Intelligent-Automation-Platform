@@ -31,6 +31,14 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      # requirements-optional.txt (chromadb/litellm) is deliberately not
+      # installed - the tested path is LLM_PROVIDER=mock +
+      # VECTOR_STORE_BACKEND=inmemory. Resolving it without installing still
+      # catches a yanked or newly-conflicting pin, which is what broke this
+      # job before (litellm==1.41.0 was removed from PyPI).
+      - name: Check optional provider pins still resolve
+        run: pip install --dry-run -r requirements.txt -r requirements-optional.txt
+
       - name: Lint (ruff)
         run: ruff check app tests
 
@@ -56,10 +64,12 @@ jobs:
         with:
           node-version: "20"
           cache: "npm"
-          cache-dependency-path: frontend/package.json
+          cache-dependency-path: frontend/package-lock.json
 
+      # `npm ci` (not `npm install`) so CI tests the exact dependency tree the
+      # lockfile pins, and fails loudly if package.json and the lock disagree.
       - name: Install dependencies
-        run: npm install
+        run: npm ci
 
       - name: Lint
         run: npm run lint
@@ -87,3 +97,92 @@ jobs:
           context: frontend
           push: false
           tags: synapse-frontend:ci
+          # Exercise the build arg, since this is the only way the deployed
+          # bundle can be pointed at a non-localhost API.
+          build-args: |
+            VITE_API_BASE_URL=https://api.example.com/api/v1
+
+  backend-boots:
+    name: Backend actually starts (catches import cycles the suite hides)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    env:
+      LLM_PROVIDER: mock
+      VECTOR_STORE_BACKEND: inmemory
+      DATABASE_URL: "sqlite:///./ci_boot_check.db"
+      SECRET_KEY: ci-test-secret-key
+      ENVIRONMENT: local
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # pytest passing is not evidence that the app starts: conftest.py imports
+      # app.db.base before app.main, which is exactly the ordering that hid a
+      # circular import while all 86 tests were green.
+      - name: Import the ASGI app as a first import
+        run: python -c "import app.main"
+
+      - name: Boot uvicorn and probe /health
+        run: |
+          uvicorn app.main:app --host 127.0.0.1 --port 8000 &
+          for _ in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:8000/health > /dev/null; then
+              curl -s http://127.0.0.1:8000/health
+              echo
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "backend never became healthy" >&2
+          exit 1
+
+      - name: Refuse to boot with the placeholder SECRET_KEY outside local
+        env:
+          ENVIRONMENT: production
+          SECRET_KEY: dev-only-insecure-secret-change-me
+        run: |
+          if python -c "import app.main" 2>/dev/null; then
+            echo "expected startup to fail with the placeholder SECRET_KEY" >&2
+            exit 1
+          fi
+          echo "correctly refused the placeholder secret"
+
+  migrations:
+    name: Alembic upgrade + downgrade round-trip
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    env:
+      DATABASE_URL: "sqlite:///./ci_migrations.db"
+      SECRET_KEY: ci-test-secret-key
+      ENVIRONMENT: local
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # Downgrades are the half that rots unnoticed, so assert the round trip
+      # rather than only that `upgrade head` works on an empty database.
+      - name: upgrade -> downgrade -> upgrade
+        run: |
+          alembic upgrade head
+          alembic downgrade base
+          alembic upgrade head
