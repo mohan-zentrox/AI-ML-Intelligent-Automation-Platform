@@ -7,7 +7,23 @@
  */
 import { getAuth } from "../store/auth";
 
-const API_BASE_URL: string = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000/api/v1";
+/**
+ * Normalise the configured base URL before it is ever concatenated with a path.
+ *
+ * VITE_API_BASE_URL is typed by hand into a hosting dashboard or a --build-arg,
+ * so a stray trailing space or trailing slash is routine - and both fail
+ * confusingly: the space produces ".../api/v1 /auth/login" and every request
+ * 404s with no hint as to why, while a trailing slash produces a double slash.
+ * Trimming here means the misconfiguration cannot reach a fetch call.
+ */
+function normaliseBaseUrl(raw: string | undefined): string {
+  const fallback = "http://localhost:8000/api/v1";
+  const trimmed = (raw ?? "").trim();
+  if (!trimmed) return fallback;
+  return trimmed.replace(/\/+$/, "");
+}
+
+const API_BASE_URL: string = normaliseBaseUrl(import.meta.env.VITE_API_BASE_URL);
 
 export class ApiError extends Error {
   status: number;

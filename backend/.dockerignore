@@ -1,0 +1,26 @@
+# Without this, `COPY . .` bakes the developer's local virtualenv (hundreds of
+# MB of platform-specific binaries), the local SQLite database, and any real
+# .env secrets straight into the image.
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Local state / data
+*.db
+synapse_local.db
+chroma_data/
+
+# Test + tool caches
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.tsbuildinfo
+
+# Secrets - the image must take config from the runtime environment.
+.env
+.env.*
+!.env.example

@@ -1,0 +1,12 @@
+# node_modules is reinstalled inside the build stage for the image's own
+# platform; copying the host's copy is both slow and wrong (native binaries).
+node_modules/
+dist/
+.vite/
+*.tsbuildinfo
+npm-debug.log*
+
+# Secrets - VITE_* build config is passed via --build-arg instead.
+.env
+.env.*
+!.env.example
