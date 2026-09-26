@@ -33,6 +33,15 @@ See `backend/app/core/security.py` (`Role` enum) and `backend/app/core/deps.py`
 ## Local Dev Seed Accounts
 
 `app.db.session.seed_reference_data()` seeds one user per role ID above on
-first startup, all with email `<ROLE_ID>@synapse.local` and password
-`ChangeMe123!`. **This password is a local-development-only placeholder and
-must never be used, or a variant of it reused, in any real deployment.**
+first startup, all with email `<ROLE_ID>@synapse.example` and password
+`ChangeMe123!`. For example: `T6-LEAD@synapse.example`.
+
+The domain is `.example`, **not** `.local`: `.local` is an RFC 6762
+special-use TLD that `email-validator` (behind pydantic's `EmailStr`) always
+rejects, so a seeded `@synapse.local` address could never log in through
+`POST /api/v1/auth/login`.
+
+**This password is a local-development-only placeholder and must never be
+used, or a variant of it reused, in any real deployment.** Seeding is gated on
+`ENVIRONMENT=local` and these accounts are not created in any other
+environment - see `should_seed_demo_users` in `backend/app/core/config.py`.

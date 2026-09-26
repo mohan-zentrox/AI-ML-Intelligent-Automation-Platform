@@ -1,0 +1,31 @@
+# Project Synapse - OPTIONAL provider backends.
+#
+# Nothing here is needed to run, test, or deploy the default configuration
+# (LLM_PROVIDER=mock, VECTOR_STORE_BACKEND=inmemory). Both packages are
+# imported lazily inside the backend that needs them, and both absences are
+# handled: `chromadb` missing -> automatic fallback to InMemoryVectorStore
+# (app/services/vector_store.py); `litellm` missing -> a clear RuntimeError
+# only if you actually set LLM_PROVIDER=litellm
+# (app/services/llm_provider.py).
+#
+# Install with:
+#     pip install -r requirements.txt -r requirements-optional.txt
+#
+# These are kept out of requirements.txt so that a yanked/withdrawn upstream
+# release can never break the core install or CI. The previous
+# `litellm==1.41.0` pin did exactly that: litellm removed its entire
+# 1.15-1.52 range from PyPI, so `pip install -r requirements.txt` failed
+# outright and took the CI backend job and both Docker builds with it.
+
+# Persistent vector store (VECTOR_STORE_BACKEND=chroma).
+# Only PersistentClient/get_or_create_collection/upsert/query/delete/count
+# are used, which are stable across 0.5.x and 1.x.
+chromadb==0.5.0
+
+# Multi-provider LLM routing (LLM_PROVIDER=litellm).
+# CEILING, do not bump blindly: litellm >=1.85 requires httpx>=0.28, but
+# fastapi 0.111's starlette TestClient still passes `app=` to httpx, which
+# httpx removed in 0.28 - so the core pin httpx==0.27.0 cannot move without
+# also moving fastapi. 1.80.17 is the newest release that resolves cleanly
+# against requirements.txt (verified with `pip install --dry-run`).
+litellm==1.80.17

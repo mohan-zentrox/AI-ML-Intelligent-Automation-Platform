@@ -151,5 +151,28 @@ the cost of auto-classifying an ingest is visible separately from RAG.
 ## Health
 
 ### `GET /health`
-No auth required. Returns app name, environment, and the currently active
-`llm_provider` / `vector_store_backend`.
+No auth required. Returns app name, environment, the active `llm_provider` /
+`vector_store_backend`, and the two chunk counts:
+
+```json
+{
+  "status": "ok",
+  "app": "Project Synapse",
+  "environment": "local",
+  "llm_provider": "mock",
+  "vector_store_backend": "pgvector",
+  "stored_chunks": 42,
+  "indexed_chunks": 42,
+  "retrieval_ready": true
+}
+```
+
+`stored_chunks` (relational) and `indexed_chunks` (vector store) should track
+each other. `stored_chunks > 0` with `indexed_chunks == 0` means the vector
+store lost its contents - typically `VECTOR_STORE_BACKEND=inmemory` after a
+restart - and every query will refuse until those documents are re-ingested.
+`retrieval_ready` is false in exactly that case.
+
+The counts are omitted (rather than the endpoint failing) if the database or
+vector store cannot be reached: a probe that 500s on a failed diagnostic is
+worse than one missing an optional field.

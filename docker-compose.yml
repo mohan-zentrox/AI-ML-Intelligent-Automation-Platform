@@ -36,6 +36,12 @@ services:
       - .env
     environment:
       DATABASE_URL: postgresql+psycopg2://synapse:synapse_local_dev_only@postgres:5432/synapse
+      # Compose is a local-dev target, so seeding the demo roster is wanted
+      # here. Both of these must be different in a real deployment - see
+      # backend/app/core/config.py, which refuses to start with the default
+      # SECRET_KEY unless ENVIRONMENT=local.
+      ENVIRONMENT: local
+      SEED_DEMO_USERS: "true"
     ports:
       - "8000:8000"
     depends_on:
@@ -47,9 +53,16 @@ services:
   frontend:
     build:
       context: ./frontend
+      # VITE_API_BASE_URL must be a BUILD arg, not a runtime `environment:`
+      # entry: Vite inlines import.meta.env.VITE_* into the JS bundle during
+      # `npm run build`, so by the time the nginx runtime stage starts there is
+      # no env var left to read. Point this at your public API origin when
+      # deploying (e.g. https://synapse-api.onrender.com/api/v1); the
+      # localhost default is only correct because compose publishes the
+      # backend on the host's port 8000, which is what the browser talks to.
+      args:
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:8000/api/v1}
     restart: unless-stopped
-    environment:
-      VITE_API_BASE_URL: http://localhost:8000/api/v1
     ports:
       - "5173:80"
     depends_on:

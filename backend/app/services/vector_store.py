@@ -16,6 +16,8 @@ sandbox is in, and it is what backend/tests exercise.
 """
 from __future__ import annotations
 
+import json
+import logging
 import math
 import threading
 from abc import ABC, abstractmethod
@@ -24,6 +26,7 @@ from dataclasses import dataclass, field
 from app.core.config import get_settings
 
 settings = get_settings()
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -179,6 +182,190 @@ class ChromaVectorStore(VectorStoreRepository):
         return self._collection.count()
 
 
+
+# --------------------------------------------------------------------------
+# pgvector - persistent, and the only backend that survives a restart on a
+# free host with no mounted disk.
+# --------------------------------------------------------------------------
+
+
+class PgVectorStore(VectorStoreRepository):
+    """Similarity search in Postgres via the `pgvector` extension.
+
+    Why this exists: `InMemoryVectorStore` loses every embedding when the
+    process restarts, and `ChromaVectorStore` needs a persistent directory.
+    Free hosting tiers restart constantly and mostly offer no disk, so both
+    leave the relational rows and the vectors disagreeing - documents keep
+    listing as ingested while every query refuses for lack of anything to
+    retrieve. Keeping the vectors in the same Postgres that already holds the
+    documents makes that divergence impossible by construction.
+
+    Deliberately uses raw SQL with `::vector` casts rather than the `pgvector`
+    Python package, so it needs nothing beyond the psycopg2 driver that is
+    already a core dependency - only the server-side extension, which managed
+    Postgres providers (Neon, Supabase, RDS) ship.
+
+    Embeddings live in their own table rather than as a column on `chunks`, so
+    enabling or dropping this backend never migrates application data.
+    """
+
+    name = "pgvector"
+
+    _TABLE = "chunk_embeddings"
+
+    def __init__(self) -> None:
+        from app.db.session import engine
+
+        if engine.dialect.name != "postgresql":
+            raise RuntimeError(
+                "VECTOR_STORE_BACKEND=pgvector requires a PostgreSQL DATABASE_URL, "
+                f"but the configured database is {engine.dialect.name!r}. Use "
+                "VECTOR_STORE_BACKEND=inmemory for local SQLite development."
+            )
+        self._engine = engine
+        self._dim = settings.EMBEDDING_DIM
+        self._ensure_schema()
+
+    def _ensure_schema(self) -> None:
+        """Create the extension, table and indexes if absent.
+
+        Done here rather than in an alembic migration on purpose: this table is
+        derived state that only exists when this backend is selected, and a
+        migration would force every deployment - including SQLite ones - to
+        carry a pgvector-shaped schema it cannot create.
+        """
+        from sqlalchemy import text
+
+        with self._engine.begin() as conn:
+            conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+            conn.execute(
+                text(
+                    "CREATE TABLE IF NOT EXISTS "
+                    + self._TABLE
+                    + " ("
+                    "chunk_id    TEXT PRIMARY KEY,"
+                    "document_id TEXT NOT NULL,"
+                    "text        TEXT NOT NULL,"
+                    "embedding   vector(" + str(self._dim) + ") NOT NULL,"
+                    "metadata    JSONB NOT NULL DEFAULT '{}'::jsonb"
+                    ")"
+                )
+            )
+            conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS " + self._TABLE + "_document_id_idx ON "
+                    + self._TABLE + " (document_id)"
+                )
+            )
+
+        # HNSW over cosine distance, in its own transaction: Postgres still
+        # answers queries by sequential scan without it, so a server build that
+        # cannot create it must not take the whole backend down.
+        try:
+            with self._engine.begin() as conn:
+                conn.execute(
+                    text(
+                        "CREATE INDEX IF NOT EXISTS " + self._TABLE + "_embedding_idx ON "
+                        + self._TABLE + " USING hnsw (embedding vector_cosine_ops)"
+                    )
+                )
+        except Exception:  # pragma: no cover - depends on the server build
+            logger.warning(
+                "Could not create the HNSW index on %s; queries will fall back to a "
+                "sequential scan, which is correct but slower.",
+                self._TABLE,
+                exc_info=True,
+            )
+
+    @staticmethod
+    def _to_vector_literal(embedding: list[float]) -> str:
+        """pgvector's text input format, e.g. "[0.1,0.2]"."""
+        return "[" + ",".join(repr(float(value)) for value in embedding) + "]"
+
+    def upsert(self, records: list[VectorRecord]) -> None:
+        if not records:
+            return
+        from sqlalchemy import text
+
+        statement = text(
+            "INSERT INTO " + self._TABLE + " (chunk_id, document_id, text, embedding, metadata) "
+            "VALUES (:chunk_id, :document_id, :text, (:embedding)::vector, (:metadata)::jsonb) "
+            "ON CONFLICT (chunk_id) DO UPDATE SET "
+            "document_id = EXCLUDED.document_id, "
+            "text = EXCLUDED.text, "
+            "embedding = EXCLUDED.embedding, "
+            "metadata = EXCLUDED.metadata"
+        )
+        with self._engine.begin() as conn:
+            conn.execute(
+                statement,
+                [
+                    {
+                        "chunk_id": record.chunk_id,
+                        "document_id": record.document_id,
+                        "text": record.text,
+                        "embedding": self._to_vector_literal(record.embedding),
+                        "metadata": json.dumps(record.metadata or {}),
+                    }
+                    for record in records
+                ],
+            )
+
+    def query(self, embedding: list[float], top_k: int) -> list[ScoredChunk]:
+        if not embedding or top_k <= 0:
+            return []
+        from sqlalchemy import text
+
+        # `<=>` is cosine DISTANCE; the rest of the platform (and
+        # SIMILARITY_THRESHOLD) speaks cosine similarity, so convert in the
+        # projection and keep the raw operator in ORDER BY, where the HNSW
+        # index can actually be used.
+        statement = text(
+            "SELECT chunk_id, document_id, text, metadata, "
+            "1 - (embedding <=> (:embedding)::vector) AS score "
+            "FROM " + self._TABLE + " "
+            "ORDER BY embedding <=> (:embedding)::vector "
+            "LIMIT :top_k"
+        )
+        with self._engine.connect() as conn:
+            rows = (
+                conn.execute(
+                    statement,
+                    {"embedding": self._to_vector_literal(embedding), "top_k": top_k},
+                )
+                .mappings()
+                .all()
+            )
+
+        return [
+            ScoredChunk(
+                chunk_id=row["chunk_id"],
+                document_id=row["document_id"],
+                text=row["text"],
+                score=float(row["score"]),
+                metadata=row["metadata"] or {},
+            )
+            for row in rows
+        ]
+
+    def delete_by_document(self, document_id: str) -> None:
+        from sqlalchemy import text
+
+        with self._engine.begin() as conn:
+            conn.execute(
+                text("DELETE FROM " + self._TABLE + " WHERE document_id = :document_id"),
+                {"document_id": document_id},
+            )
+
+    def count(self) -> int:
+        from sqlalchemy import text
+
+        with self._engine.connect() as conn:
+            return int(
+                conn.execute(text("SELECT count(*) FROM " + self._TABLE)).scalar_one()
+            )
+
+
 _store_instance: VectorStoreRepository | None = None
 
 
@@ -187,7 +374,14 @@ def get_vector_store() -> VectorStoreRepository:
     if _store_instance is not None:
         return _store_instance
 
-    if settings.VECTOR_STORE_BACKEND == "chroma":
+    if settings.VECTOR_STORE_BACKEND == "pgvector":
+        # No silent fallback here, unlike chroma below. Chroma degrading to
+        # in-memory costs a local developer nothing, but pgvector is chosen
+        # precisely because the data has to persist - quietly swapping in a
+        # store that forgets everything on restart would turn a visible
+        # misconfiguration into silent data loss.
+        _store_instance = PgVectorStore()
+    elif settings.VECTOR_STORE_BACKEND == "chroma":
         try:
             _store_instance = ChromaVectorStore()
         except ImportError:

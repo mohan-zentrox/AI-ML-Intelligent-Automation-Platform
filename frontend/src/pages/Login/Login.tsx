@@ -5,7 +5,7 @@ import { setAuth } from "../../store/auth";
 
 export default function Login() {
   const navigate = useNavigate();
-  const [email, setEmail] = useState("T6-LEAD@synapse.local");
+  const [email, setEmail] = useState("T6-LEAD@synapse.example");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
