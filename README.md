@@ -150,7 +150,11 @@ All under `backend/app/scaffold/`, each with FRD-section references:
 
 ## Deployment Notes
 
-Two things bite when moving off localhost:
+Full step-by-step runbook: **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)**
+(Cloudflare Pages + Render + Neon, all free tier). `render.yaml` in the repo
+root is a Render Blueprint for the backend.
+
+Three things bite when moving off localhost:
 
 1. **`VITE_API_BASE_URL` is build-time, not runtime.** Vite inlines `VITE_*`
    into the JS bundle during `npm run build`, so setting it on a running

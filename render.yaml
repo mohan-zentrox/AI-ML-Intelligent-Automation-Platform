@@ -1,0 +1,73 @@
+# Render Blueprint - Project Synapse backend.
+#
+# Deploys the FastAPI service on Render's free tier. Postgres is NOT declared
+# here: Render's own free Postgres is deleted after 30 days, so the database
+# lives on Neon instead and is wired in through DATABASE_URL below.
+#
+# To use: Render dashboard -> New -> Blueprint -> point at this repo. Render
+# reads this file and prompts for the two values marked `sync: false`.
+#
+# Free-tier behaviour worth expecting: the service sleeps after 15 minutes of
+# inactivity and takes roughly 50 seconds to wake. That is a cold start, not a
+# failure - `/health` will answer once it is up.
+
+services:
+  - type: web
+    name: synapse-backend
+    runtime: docker
+    plan: free
+    region: singapore
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    healthCheckPath: /health
+    autoDeploy: true
+
+    envVars:
+      # Signs JWTs and HMACs the stored API-key hashes. Render generates a
+      # random value and keeps it out of the repo entirely - never set this by
+      # hand, and never reuse the placeholder from .env.example (the app
+      # refuses to start with it once ENVIRONMENT != local).
+      - key: SECRET_KEY
+        generateValue: true
+
+      # Anything other than "local" enables the deployment safety checks:
+      # the placeholder SECRET_KEY is rejected and the docs/TEAM.md demo
+      # accounts are not seeded.
+      - key: ENVIRONMENT
+        value: production
+
+      # Paste the Neon pooled connection string, rewritten for SQLAlchemy:
+      #   postgresql+psycopg2://USER:PASSWORD@HOST/DB?sslmode=require
+      # Use the -pooler host. Drop `channel_binding=require` if present -
+      # psycopg2 does not accept it.
+      - key: DATABASE_URL
+        sync: false
+
+      # Origins allowed to call the API - the deployed frontend lives on a
+      # different origin, so without this every browser request fails
+      # preflight. Comma-separated, e.g.
+      #   https://synapse-frontend.pages.dev
+      - key: CORS_ORIGINS
+        sync: false
+
+      # Embeddings go in the same Postgres as the documents. The default
+      # `inmemory` store would be emptied by every cold start while the
+      # document rows survived, leaving the UI listing documents that no query
+      # can retrieve.
+      - key: VECTOR_STORE_BACKEND
+        value: pgvector
+
+      # Must match the active embedding model: 256 for the mock provider,
+      # 1536 for OpenAI text-embedding-3-small.
+      - key: EMBEDDING_DIM
+        value: "256"
+
+      # The mock provider is deterministic, offline and free, so the whole
+      # pipeline works with no API key. Switch to a real model by setting
+      # LLM_PROVIDER=litellm plus LITELLM_MODEL and the matching vendor key,
+      # and remember to update EMBEDDING_DIM to that model's dimensionality.
+      - key: LLM_PROVIDER
+        value: mock
+
+      - key: DEBUG
+        value: "false"
