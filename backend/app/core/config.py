@@ -49,9 +49,19 @@ class Settings(BaseSettings):
     DATABASE_URL: str = "sqlite:///./synapse_local.db"
 
     # --- Vector store ---
-    # "chroma"   -> persistent ChromaDB collection (requires chromadb package)
-    # "inmemory" -> pure-python cosine-similarity fallback, zero deps
-    VECTOR_STORE_BACKEND: Literal["chroma", "inmemory"] = "inmemory"
+    # "pgvector" -> embeddings in the same Postgres that holds the documents.
+    #               The only backend that survives a restart without a mounted
+    #               disk, so this is the one to use on managed/free hosting.
+    # "chroma"   -> persistent ChromaDB collection (needs the chromadb package
+    #               and a persistent directory)
+    # "inmemory" -> pure-python cosine similarity, zero deps, and LOSES every
+    #               embedding on restart - fine for local dev and tests only
+    VECTOR_STORE_BACKEND: Literal["pgvector", "chroma", "inmemory"] = "inmemory"
+    # Dimensionality of the active embedding model; sizes the pgvector column.
+    # Must match the provider - the mock provider emits 256, OpenAI
+    # text-embedding-3-small emits 1536. Changing this once documents exist
+    # means re-ingesting them.
+    EMBEDDING_DIM: int = 256
     CHROMA_PERSIST_DIR: str = "./chroma_data"
     CHROMA_COLLECTION_NAME: str = "synapse_chunks"
 

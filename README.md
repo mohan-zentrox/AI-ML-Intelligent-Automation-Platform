@@ -167,12 +167,25 @@ Two things bite when moving off localhost:
 The backend honours `$PORT` (falling back to 8000), which is how Render, Fly,
 Cloud Run and Hugging Face Spaces assign a listen port.
 
-One design caveat worth knowing before picking a host: `VECTOR_STORE_BACKEND=inmemory`
-loses every embedding on restart, and `chroma` needs a persistent disk, which
-most free tiers do not provide. For a free deployment the durable option is a
-pgvector-backed `VectorStore` implementation against the same Postgres you are
-already running - a new class behind the existing ABC in
-`backend/app/services/vector_store.py`, no call-site changes.
+3. **Use `VECTOR_STORE_BACKEND=pgvector`.** The default `inmemory` backend
+   loses every embedding on restart, and `chroma` needs a persistent disk that
+   most free tiers do not offer. Either way the database keeps the document and
+   chunk rows, so the UI goes on listing documents as ingested while every
+   query refuses - a silent failure rather than a loud one. `pgvector` keeps
+   the embeddings in the same Postgres as the documents, so the two cannot
+   drift apart:
+
+   ```env
+   DATABASE_URL=postgresql+psycopg2://...
+   VECTOR_STORE_BACKEND=pgvector
+   EMBEDDING_DIM=256          # 256 for the mock provider, 1536 for text-embedding-3-small
+   ```
+
+   It needs only the server-side `vector` extension (Neon, Supabase and RDS all
+   ship it) - no extra Python package, since it uses raw SQL over the psycopg2
+   driver already in `requirements.txt`. The extension, table and HNSW index
+   are created on first use. `GET /health` reports `stored_chunks`,
+   `indexed_chunks` and `retrieval_ready` so a mismatch is visible immediately.
 
 ## Verification (what was actually run in this environment)
 
@@ -182,7 +195,8 @@ executed rather than hand-reviewed:
 - `pip install -r requirements.txt` - resolves clean, and
   `pip install --dry-run -r requirements.txt -r requirements-optional.txt`
   confirms the optional pins still co-resolve with the core ones.
-- `pytest` - **116 passed** (`backend/.venv`). This is the
+- `pytest` - **116 passed, 13 skipped** (`backend/.venv`); the skips are the
+  pgvector suite, which needs a Postgres server (see below). This is the
   zero-external-dependency path: `LLM_PROVIDER=mock`,
   `VECTOR_STORE_BACKEND=inmemory`, SQLite in-memory.
 - `python -c "import app.main"` as a *first* import, plus a real
@@ -194,6 +208,12 @@ executed rather than hand-reviewed:
   scratch SQLite file - both migrations (`0001`, `0002`) run clean in both
   directions.
 - `ruff check app tests` - clean.
+- `PgVectorStore` against a real PostgreSQL 18 + pgvector 0.8.6 server
+  (Neon): **13 passed**, covering cosine ranking, similarity-vs-distance
+  conversion, in-place upsert, JSONB metadata round-trip, delete-by-document,
+  and - the point of the backend - embeddings surviving a fresh process.
+  `alembic upgrade head` was also run against that Postgres, which is the
+  first time the non-SQLite path has been exercised at all.
 - A full manual pass against the running stack: login, JWT + `X-API-Key` auth,
   the whole RBAC matrix in `docs/TEAM.md` (all 9 allow/deny cells), text +
   multipart PDF/DOCX ingestion, classification, grounded query, the refusal
