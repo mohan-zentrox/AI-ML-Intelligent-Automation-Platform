@@ -9,7 +9,7 @@ relying on the exact numeric output of the mock hashing embedder.
 from __future__ import annotations
 
 from app.core.config import get_settings
-from app.models.review_item import ReviewItem
+from app.models.review_item import ReviewItem, ReviewItemType
 from app.models.query_log import QueryLog
 from app.services.ingestion import ingest_document
 from app.services.rag import INSUFFICIENT_CONTEXT_MESSAGE, answer_question
@@ -19,6 +19,14 @@ SAMPLE_DOC_TEXT = (
     "Customers must provide the original receipt to request a refund. "
     "Support tickets for refund requests are handled by the billing team."
 )
+
+
+def _answer_review_count(db_session) -> int:
+    return (
+        db_session.query(ReviewItem)
+        .filter(ReviewItem.item_type == ReviewItemType.ANSWER.value)
+        .count()
+    )
 
 
 def _ingest_sample(db_session, mock_provider, in_memory_store, uploaded_by="user-1"):
@@ -113,7 +121,10 @@ def test_high_confidence_answer_is_not_routed_to_review_queue(db_session, mock_p
     )
 
     assert result.review_item_id is None
-    assert db_session.query(ReviewItem).count() == 0
+    # Scoped to answer items: ingesting the sample document may also have
+    # queued a classification item (FRD 7), which is unrelated to whether
+    # this answer was routed for review.
+    assert _answer_review_count(db_session) == 0
 
 
 def test_insufficient_context_triggers_documented_refusal(db_session, mock_provider, in_memory_store, monkeypatch):
@@ -145,7 +156,10 @@ def test_insufficient_context_triggers_documented_refusal(db_session, mock_provi
     # Refusals are not routed to the review queue - they are already a safe,
     # documented failure mode (see docs/RESPONSIBLE_AI.md), not a low
     # confidence answer needing a human to adjudicate.
-    assert db_session.query(ReviewItem).count() == 0
+    # Scoped to answer items: ingesting the sample document may also have
+    # queued a classification item (FRD 7), which is unrelated to whether
+    # this answer was routed for review.
+    assert _answer_review_count(db_session) == 0
 
 
 def test_insufficient_context_with_empty_knowledge_base(db_session, mock_provider, in_memory_store):

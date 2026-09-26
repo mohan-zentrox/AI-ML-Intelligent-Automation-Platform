@@ -25,7 +25,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.models.query_log import QueryLog
-from app.models.review_item import ReviewItem
+from app.models.review_item import ReviewItem, ReviewItemType
 from app.models.usage_log import UsageLog
 from app.services.llm_provider import LLMProvider, get_llm_provider
 from app.services.vector_store import ScoredChunk, VectorStoreRepository, get_vector_store
@@ -200,6 +200,7 @@ def answer_question(
     review_item_id = None
     if confidence < settings.REVIEW_CONFIDENCE_THRESHOLD:
         review_item = ReviewItem(
+            item_type=ReviewItemType.ANSWER.value,
             query_log_id=query_log.id,
             question=question,
             proposed_answer=completion.text,

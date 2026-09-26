@@ -3,8 +3,8 @@ SCAFFOLD ONLY - Structured field extraction.
 
 Reference: FRD section 8 "Structured Field Extraction". Intended to pull a
 schema-defined set of fields (e.g. invoice_number, total_amount, due_date)
-out of a classified document (see classification.py) and return them as
-validated, typed data rather than free text.
+out of a classified document (see app/services/classification.py) and
+return them as validated, typed data rather than free text.
 
 Not wired into the API yet.
 """
@@ -18,7 +18,9 @@ from pydantic import BaseModel
 class ExtractionSchema(BaseModel):
     """TODO(FRD 8.1): user/admin-defined field schema for a document
     category, e.g. {"invoice_number": "string", "total_amount": "number"}.
-    Would be persisted per-classification-label and versioned.
+    Would be persisted per-classification-label (keyed on the labels in
+    app.services.classification.TAXONOMY) and versioned alongside
+    TAXONOMY_VERSION.
     """
 
     name: str

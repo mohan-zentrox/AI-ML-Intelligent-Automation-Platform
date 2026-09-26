@@ -23,6 +23,7 @@ from app.db.base import Base
 from app.db.session import get_db
 from app.main import app
 from app.models.user import User
+from tests.document_fixtures import _build_docx, _build_pdf
 
 _engine = create_engine(
     "sqlite://",
@@ -162,3 +163,225 @@ def test_analyst_can_read_usage_analytics(client):
     body = resp.json()
     assert "by_day" in body
     assert "by_user" in body
+
+
+def test_admin_can_upload_a_pdf(client):
+    """FRD 4.2.1 - the multipart path must parse a real PDF, not just .txt/.md."""
+    token = _login(client, "admin@synapse.example", "AdminPass123!")
+    pdf_bytes = _build_pdf(["Expense policy: meals are reimbursed up to 40 USD per day."])
+
+    resp = client.post(
+        "/api/v1/documents",
+        files={"file": ("expense-policy.pdf", pdf_bytes, "application/pdf")},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["source_type"] == "pdf"
+    assert body["title"] == "expense-policy.pdf"
+    assert body["chunk_count"] >= 1
+
+
+def test_admin_can_upload_a_docx_with_an_explicit_title(client):
+    """FRD 4.2.3 - and an explicit `title` form field wins over the filename."""
+    token = _login(client, "admin@synapse.example", "AdminPass123!")
+    docx_bytes = _build_docx(["Vendor Agreement", "Termination requires 60 days notice."])
+
+    resp = client.post(
+        "/api/v1/documents",
+        data={"title": "Vendor Agreement 2026"},
+        files={
+            "file": (
+                "vendor.docx",
+                docx_bytes,
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
+        },
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["source_type"] == "docx"
+    assert body["title"] == "Vendor Agreement 2026"
+    assert body["chunk_count"] >= 1
+
+
+def test_upload_of_unsupported_type_returns_415(client):
+    token = _login(client, "admin@synapse.example", "AdminPass123!")
+    resp = client.post(
+        "/api/v1/documents",
+        files={"file": ("backup.zip", b"PK", "application/zip")},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 415
+    assert ".pdf" in resp.json()["detail"]
+
+
+def test_upload_of_corrupt_pdf_returns_400(client):
+    token = _login(client, "admin@synapse.example", "AdminPass123!")
+    resp = client.post(
+        "/api/v1/documents",
+        files={"file": ("broken.pdf", b"not really a pdf", "application/pdf")},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 400
+
+
+def test_uploaded_pdf_is_retrievable_through_rag(client):
+    """The whole point of multi-format ingestion: PDF content must reach the
+    vector store and come back as a citation."""
+    token = _login(client, "admin@synapse.example", "AdminPass123!")
+    headers = {"Authorization": f"Bearer {token}"}
+    pdf_bytes = _build_pdf(["The security incident hotline is staffed 24 hours a day."])
+
+    upload = client.post(
+        "/api/v1/documents",
+        files={"file": ("security.pdf", pdf_bytes, "application/pdf")},
+        headers=headers,
+    )
+    assert upload.status_code == 200, upload.text
+    document_id = upload.json()["id"]
+
+    listing = client.get("/api/v1/documents", headers=headers)
+    assert listing.status_code == 200
+    assert any(d["id"] == document_id for d in listing.json())
+
+
+# --------------------------------------------------------------------------
+# Document classification (FRD 7)
+# --------------------------------------------------------------------------
+
+_INVOICE_TEXT = (
+    "INVOICE #INV-7781. Bill To: Globex. Line items: 2 units, unit price 250.00. "
+    "Subtotal 500.00, sales tax 40.00, total amount due 540.00. Payment terms net 30. "
+    "Remittance details below. Purchase order PO-9931."
+)
+
+_UNCLASSIFIABLE_TEXT = "Cabbage lantern brook whistle. Marble tangent violet sparrow."
+
+
+def test_taxonomy_endpoint_serves_the_label_set(client):
+    """Clients render label pickers from this, so it must not be empty or
+    unversioned."""
+    token = _login(client, "analyst@synapse.example", "AnalystPass123!")
+    resp = client.get("/api/v1/documents/taxonomy", headers={"Authorization": f"Bearer {token}"})
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["version"]
+    labels = [c["label"] for c in body["categories"]]
+    assert "invoice" in labels
+    assert all(c["description"] for c in body["categories"])
+
+
+def test_ingested_document_is_classified_and_filterable(client):
+    token = _login(client, "admin@synapse.example", "AdminPass123!")
+    headers = {"Authorization": f"Bearer {token}"}
+
+    resp = client.post(
+        "/api/v1/documents/text",
+        json={"title": "Globex Invoice 7781", "text": _INVOICE_TEXT},
+        headers=headers,
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["classification_label"] == "invoice"
+    assert body["classification_status"] == "auto"
+    assert body["classification_confidence"] > 0
+
+    filtered = client.get("/api/v1/documents?label=invoice", headers=headers)
+    assert filtered.status_code == 200
+    assert any(d["id"] == body["id"] for d in filtered.json())
+
+
+def test_filtering_by_an_unknown_label_is_a_400(client):
+    token = _login(client, "admin@synapse.example", "AdminPass123!")
+    resp = client.get(
+        "/api/v1/documents?label=not_a_category", headers={"Authorization": f"Bearer {token}"}
+    )
+    assert resp.status_code == 400
+
+
+def test_analyst_cannot_reclassify(client):
+    """Reclassification costs a provider call and can overwrite a
+    human-confirmed label, so it is Admin/Workflow Builder only."""
+    token = _login(client, "analyst@synapse.example", "AnalystPass123!")
+    headers = {"Authorization": f"Bearer {token}"}
+    doc = client.post(
+        "/api/v1/documents/text",
+        json={"title": "Analyst Invoice", "text": _INVOICE_TEXT},
+        headers=headers,
+    )
+    assert doc.status_code == 200, doc.text
+
+    resp = client.post(f"/api/v1/documents/{doc.json()['id']}/reclassify", headers=headers)
+    assert resp.status_code == 403
+
+
+def test_reclassify_of_a_missing_document_is_a_404(client):
+    token = _login(client, "admin@synapse.example", "AdminPass123!")
+    resp = client.post(
+        "/api/v1/documents/does-not-exist/reclassify",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 404
+
+
+def test_low_confidence_classification_round_trips_through_human_review(client):
+    """The full FRD 7.1 loop: an unclassifiable document is queued, a reviewer
+    corrects the label, and the correction lands on the document itself -
+    otherwise the queue would be decorative."""
+    admin_headers = {"Authorization": f"Bearer {_login(client, 'admin@synapse.example', 'AdminPass123!')}"}
+
+    doc = client.post(
+        "/api/v1/documents/text",
+        json={"title": "Unreadable Note", "text": _UNCLASSIFIABLE_TEXT},
+        headers=admin_headers,
+    )
+    assert doc.status_code == 200, doc.text
+    document_id = doc.json()["id"]
+    assert doc.json()["classification_label"] is None
+    assert doc.json()["classification_status"] == "pending_review"
+
+    queue = client.get(
+        "/api/v1/review/queue?status=pending&item_type=classification", headers=admin_headers
+    )
+    assert queue.status_code == 200, queue.text
+    items = [i for i in queue.json() if i["document_id"] == document_id]
+    assert len(items) == 1
+    item = items[0]
+    assert item["item_type"] == "classification"
+
+    # The classifier proposed no usable label, so there is nothing to approve.
+    bad = client.post(
+        f"/api/v1/review/queue/{item['id']}/decision",
+        json={"decision": "approved", "rationale": "looks fine"},
+        headers=admin_headers,
+    )
+    assert bad.status_code == 400
+
+    # Nor can a reviewer invent a label outside the taxonomy.
+    off_taxonomy = client.post(
+        f"/api/v1/review/queue/{item['id']}/decision",
+        json={"decision": "edited", "rationale": "it is a memo", "final_answer": "memo"},
+        headers=admin_headers,
+    )
+    assert off_taxonomy.status_code == 400
+
+    decided = client.post(
+        f"/api/v1/review/queue/{item['id']}/decision",
+        json={
+            "decision": "edited",
+            "rationale": "Reviewed the source: it is internal correspondence.",
+            "final_answer": "correspondence",
+        },
+        headers=admin_headers,
+    )
+    assert decided.status_code == 200, decided.text
+    assert decided.json()["status"] == "edited"
+
+    listing = client.get("/api/v1/documents?label=correspondence", headers=admin_headers)
+    corrected = [d for d in listing.json() if d["id"] == document_id]
+    assert len(corrected) == 1
+    assert corrected[0]["classification_status"] == "corrected"
+    # The label is a human's now, so the model's confidence is cleared.
+    assert corrected[0]["classification_confidence"] is None
