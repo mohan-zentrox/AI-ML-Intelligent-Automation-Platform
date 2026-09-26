@@ -28,16 +28,12 @@ python-multipart==0.0.9
 pypdf==4.2.0
 python-docx==1.1.2
 
-# Vector store (optional at runtime - see app/services/vector_store.py).
-# If this package cannot be installed in an offline/sandboxed environment,
-# the application automatically falls back to the pure-python
-# InMemoryVectorStore implementation. Nothing else needs to change.
-chromadb==0.5.0
-
-# LLM orchestration (optional at runtime - see app/services/llm_provider.py).
-# Only required when LLM_PROVIDER=litellm. The default LLM_PROVIDER=mock
-# path has zero external dependencies and zero network calls.
-litellm==1.41.0
+# Optional provider backends (chromadb, litellm) are NOT listed here on
+# purpose - see requirements-optional.txt. Neither is needed for the
+# default LLM_PROVIDER=mock / VECTOR_STORE_BACKEND=inmemory path, and
+# keeping them out means an upstream release being yanked from PyPI can
+# never break the core install (which is exactly what happened with the
+# previous litellm==1.41.0 pin).
 
 # Testing / dev tooling
 pytest==8.2.2
