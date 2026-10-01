@@ -5,7 +5,9 @@ import { setAuth } from "../../store/auth";
 
 export default function Login() {
   const navigate = useNavigate();
-  const [email, setEmail] = useState("T6-LEAD@synapse.example");
+  // Prefilled for local dev only - in a deployed build this would name the
+  // seeded admin account to anyone who opens the login page.
+  const [email, setEmail] = useState(import.meta.env.DEV ? "T6-LEAD@synapse.example" : "");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -33,7 +35,7 @@ export default function Login() {
     <div className="min-h-screen flex items-center justify-center bg-gray-50">
       <div className="w-full max-w-sm bg-white shadow rounded-lg p-8">
         <h1 className="text-xl font-semibold text-synapse-900 mb-1">Project Synapse</h1>
-        <p className="text-sm text-gray-500 mb-6">Sign in with your seeded role account.</p>
+        <p className="text-sm text-gray-500 mb-6">Sign in to continue.</p>
 
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
@@ -68,10 +70,51 @@ export default function Login() {
           </button>
         </form>
 
-        <p className="mt-6 text-xs text-gray-400">
-          Local dev seed accounts (see docs/TEAM.md): T6-LEAD, T6-BE1, T6-DEV1,
-          T6-DATA1/2/3 — default password <code>ChangeMe123!</code>.
-        </p>
+        {/*
+          Gated on `import.meta.env.DEV`, and that gate is the point of this
+          block rather than an afterthought. These are the docs/TEAM.md seed
+          accounts, whose shared password is published in this repo and whose
+          T6-LEAD entry is an admin - so rendering them unconditionally
+          printed a working admin credential on the login page of every
+          deployed build. Vite substitutes the literal `false` for
+          `import.meta.env.DEV` during `npm run build` and drops the dead
+          branch, so the strings are absent from the production bundle, not
+          merely hidden in it.
+
+          Formatting rule below: each credential sits on its own line and is
+          the LAST thing on it. Nothing may follow a credential on the same
+          line - not a full stop, not a comma. This block previously read
+          "... password <code>ChangeMe123!</code>." and the sentence-ending
+          period was flush against the code span, so selecting the password
+          dragged the period in with it and login failed with "Invalid
+          credentials" while the password looked correct on screen.
+
+          The email is spelled out in full for the same reason: listing only
+          "T6-LEAD" left people guessing at the domain, and @synapse.local -
+          the obvious guess, and what the docs used to say - can never
+          authenticate, because .local is an RFC 6762 special-use TLD that the
+          email validator rejects outright.
+        */}
+        {import.meta.env.DEV && (
+          <div className="mt-6 space-y-1 text-xs text-gray-400">
+            <p>Local dev seed accounts (see docs/TEAM.md)</p>
+            <p>
+              Email:{" "}
+              <code className="select-all rounded bg-gray-100 px-1.5 py-0.5 font-mono text-gray-700">
+                T6-LEAD@synapse.example
+              </code>
+            </p>
+            <p>
+              Password:{" "}
+              <code className="select-all rounded bg-gray-100 px-1.5 py-0.5 font-mono text-gray-700">
+                ChangeMe123!
+              </code>
+            </p>
+            <p className="pt-1">
+              Other roles replace T6-LEAD with T6-BE1, T6-DEV1, T6-DATA1, T6-DATA2 or T6-DATA3
+            </p>
+          </div>
+        )}
       </div>
     </div>
   );

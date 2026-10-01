@@ -16,6 +16,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from app.core.config import get_settings
 from app.core.deps import Principal, require_role
 from app.core.security import Role
 from app.db.session import get_db
@@ -33,10 +34,58 @@ from app.services.parsers import (
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 
+settings = get_settings()
+
+# Read granularity for the size-capped upload read below. Small enough that an
+# oversized file is rejected after buffering ~1 MB rather than all of it.
+_UPLOAD_CHUNK_BYTES = 1024 * 1024
+
 _INGEST_ROLES = (Role.ADMIN, Role.WORKFLOW_BUILDER, Role.ANALYST)
 # Re-running the classifier costs a provider call and overwrites a label a
 # reviewer may already have confirmed, so it is not open to Analysts.
 _RECLASSIFY_ROLES = (Role.ADMIN, Role.WORKFLOW_BUILDER)
+
+
+def _human_size(num_bytes: int) -> str:
+    """Render a byte count for an error message a human has to act on.
+
+    Integer-dividing straight to MB reports a 512 KB cap as "0 MB", which
+    tells the caller nothing about what size would actually be accepted.
+    """
+    if num_bytes >= 1024 * 1024:
+        return f"{num_bytes / (1024 * 1024):.10g} MB"
+    if num_bytes >= 1024:
+        return f"{num_bytes / 1024:.10g} KB"
+    return f"{num_bytes} bytes"
+
+
+async def _read_upload_capped(file: UploadFile, max_bytes: int) -> bytes:
+    """Read an upload, refusing anything over `max_bytes` with a 413.
+
+    Reads in chunks and aborts mid-stream on purpose. The obvious spelling -
+    `await file.read()` and then check `len()` - allocates the entire body
+    before it can decide to reject it, so the oversized upload it is meant to
+    defend against has already done its damage by the time the check runs.
+
+    Content-Length is deliberately not trusted as the gate: it is client-
+    supplied, absent under chunked transfer encoding, and describes the whole
+    multipart envelope rather than this part. The bytes actually read are the
+    only honest measure.
+    """
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = await file.read(_UPLOAD_CHUNK_BYTES)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > max_bytes:
+            raise HTTPException(
+                status_code=413,
+                detail=f"File exceeds the maximum upload size of {_human_size(max_bytes)}.",
+            )
+        chunks.append(chunk)
+    return b"".join(chunks)
 
 
 def _to_document_out(db: Session, document: Document) -> DocumentOut:
@@ -67,7 +116,7 @@ async def create_document(
     if file is not None:
         if not file.filename:
             raise HTTPException(status_code=400, detail="Uploaded file has no filename")
-        raw_bytes = await file.read()
+        raw_bytes = await _read_upload_capped(file, settings.MAX_UPLOAD_BYTES)
         try:
             parsed = parse_upload(file.filename, raw_bytes)
         except UnsupportedFormat as exc:

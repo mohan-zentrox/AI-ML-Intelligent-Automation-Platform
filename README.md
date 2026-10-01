@@ -96,8 +96,13 @@ frontend and backend, and stale classifications are findable and re-runnable.
 
 ## Quick start
 
-**Requirements:** Python 3.11+ and Node 18+. Nothing else — no Docker, no
-Postgres, no API keys.
+**Requirements:** Python **3.11 or 3.12**, and Node 18+. Nothing else — no
+Docker, no Postgres, no API keys.
+
+> **Not 3.13 or newer.** The pinned `psycopg2-binary` and `pydantic-core` have
+> no wheels for 3.13+, so `pip install -r requirements.txt` fails with
+> `No matching distribution found` rather than anything that points at your
+> Python version. CI, the Dockerfile and the ruff target all run 3.11.
 
 ### 1. Backend
 
@@ -111,6 +116,11 @@ python -m venv .venv
 pip install -r requirements.txt
 uvicorn app.main:app --reload
 ```
+
+On Windows, clone somewhere short like `C:\dev\synapse`: one of the parsing
+dependencies ships deeply nested files, and a long clone path makes `pip
+install` fail with an `lxml` `No such file or directory` error unless Windows
+long-path support is enabled.
 
 Backend is on **http://localhost:8000** — interactive API docs at
 **http://localhost:8000/docs**.

@@ -43,6 +43,7 @@ Errors:
 | Status | Cause |
 |---|---|
 | `400` | empty body, missing `title` for text, or a corrupt/unreadable file |
+| `413` | file is larger than `MAX_UPLOAD_BYTES` (default 10 MB) |
 | `415` | unsupported extension (e.g. `.zip`, legacy `.doc`) |
 | `503` | format is supported but its optional package is not installed (`pypdf`) |
 
