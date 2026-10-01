@@ -86,6 +86,16 @@ class Settings(BaseSettings):
     # review queue instead of (or in addition to) being returned directly.
     REVIEW_CONFIDENCE_THRESHOLD: float = 0.55
 
+    # --- Uploads ---
+    # Hard ceiling on a single uploaded file, enforced while the body is read
+    # rather than after (see app/api/v1/documents.py). Uncapped, one upload
+    # decided how much memory the process allocated, which on a small
+    # instance - Render's free tier is 512 MB - is an out-of-memory kill
+    # triggered by any unauthenticated-adjacent client with an ingest role.
+    # 10 MB comfortably exceeds the text-bearing PDFs and DOCX files this
+    # pipeline is for; raise it if you genuinely ingest larger ones.
+    MAX_UPLOAD_BYTES: int = 10 * 1024 * 1024
+
     # --- Document classification (FRD 7) ---
     # Auto-classify every ingested document into the taxonomy defined in
     # app/services/classification.py. Disable to ingest without spending a

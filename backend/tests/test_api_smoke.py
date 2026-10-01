@@ -206,6 +206,80 @@ def test_admin_can_upload_a_docx_with_an_explicit_title(client):
     assert body["chunk_count"] >= 1
 
 
+def test_upload_over_the_size_cap_returns_413(client, monkeypatch):
+    """An oversized upload must be refused, and refused before it is parsed.
+
+    The cap is patched down rather than the test building a real 10 MB body:
+    the behaviour under test is the comparison, and a 10 MB multipart request
+    per run buys nothing but wall-clock time.
+    """
+    from app.api.v1 import documents as documents_api
+
+    monkeypatch.setattr(documents_api.settings, "MAX_UPLOAD_BYTES", 1024)
+    token = _login(client, "admin@synapse.example", "AdminPass123!")
+
+    resp = client.post(
+        "/api/v1/documents",
+        files={"file": ("huge.txt", b"x" * 4096, "text/plain")},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 413, resp.text
+    # The message has to name a size the caller can act on; a cap under 1 MB
+    # used to integer-divide to the useless "0 MB".
+    assert resp.json()["detail"] == "File exceeds the maximum upload size of 1 KB."
+
+    # Rejected, not half-ingested: nothing reached the documents table.
+    listing = client.get(
+        "/api/v1/documents", headers={"Authorization": f"Bearer {token}"}
+    ).json()
+    assert not any(d["title"] == "huge.txt" for d in listing)
+
+
+def test_size_cap_is_checked_before_the_format_check(client, monkeypatch):
+    """413 beats 415 - an oversized body is rejected without being parsed.
+
+    Order matters: deciding the format first would mean reading the whole
+    oversized body to find out it was unsupported anyway, which is exactly
+    the allocation the cap exists to prevent.
+    """
+    from app.api.v1 import documents as documents_api
+
+    monkeypatch.setattr(documents_api.settings, "MAX_UPLOAD_BYTES", 1024)
+    token = _login(client, "admin@synapse.example", "AdminPass123!")
+
+    resp = client.post(
+        "/api/v1/documents",
+        files={"file": ("backup.zip", b"PK" + b"x" * 4096, "application/zip")},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 413, resp.text
+
+
+def test_upload_at_exactly_the_size_cap_is_accepted(client, monkeypatch):
+    """The boundary is inclusive - the cap rejects `>`, not `>=`."""
+    from app.api.v1 import documents as documents_api
+
+    body = b"Refunds are issued within 30 days. " * 20
+    monkeypatch.setattr(documents_api.settings, "MAX_UPLOAD_BYTES", len(body))
+    token = _login(client, "admin@synapse.example", "AdminPass123!")
+
+    resp = client.post(
+        "/api/v1/documents",
+        files={"file": ("exact.txt", body, "text/plain")},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["chunk_count"] >= 1
+
+
+def test_default_upload_cap_is_ten_megabytes():
+    """Guards the default itself: a cap silently widened to a huge value would
+    leave every test above passing while the deployment stayed exposed."""
+    from app.core.config import Settings
+
+    assert Settings(SECRET_KEY="x").MAX_UPLOAD_BYTES == 10 * 1024 * 1024
+
+
 def test_upload_of_unsupported_type_returns_415(client):
     token = _login(client, "admin@synapse.example", "AdminPass123!")
     resp = client.post(
